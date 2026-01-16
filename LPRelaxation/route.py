@@ -3,11 +3,11 @@ import copy
 class Route:
     def __init__(self, path=None, cost=0.0, Q=0.0):
         """
-        初始化 Route 类。
+        Initialize the Route class.
 
-        :param path: 路径列表，默认为 None，表示空路径
-        :param cost: 路径成本，默认为 0.0
-        :param Q: 路径的其他资源（如流量等），默认为 0.0
+        :param path: Path list, default is None, represents an empty path
+        :param cost: Path cost, default is 0.0
+        :param Q: Other resources of the path (e.g., flow), default is 0.0
         """
         self.path = path if path is not None else []
         self.cost = cost
@@ -15,25 +15,25 @@ class Route:
 
     def clone(self):
         """
-        深拷贝当前路径对象。
+        Deep copy the current route object.
         """
         return copy.deepcopy(self)
 
     def remove_city(self, city):
         """
-        从路径中移除指定城市。
+        Remove a specified city from the path.
 
-        :param city: 要移除的城市编号
+        :param city: City number to remove
         """
         if city in self.path:
             self.path.remove(city)
 
     def add_city(self, city, after_city=None):
         """
-        向路径中添加城市。
+        Add a city to the path.
 
-        :param city: 要添加的城市编号
-        :param after_city: 在哪个城市之后添加（可选）
+        :param city: City number to add
+        :param after_city: After which city to add (optional)
         """
         if after_city is None:
             self.path.append(city)
@@ -43,52 +43,52 @@ class Route:
 
     def set_cost(self, cost):
         """
-        设置路径成本。
+        Set the path cost.
 
-        :param cost: 新的成本值
+        :param cost: New cost value
         """
         self.cost = cost
 
     def get_cost(self):
         """
-        获取路径成本。
+        Get the path cost.
         """
         return self.cost
 
     def set_Q(self, Q):
         """
-        设置路径的其他资源（如流量等）。
+        Set other resources of the path (e.g., flow).
 
-        :param Q: 新的资源值
+        :param Q: New resource value
         """
         self.Q = Q
 
     def get_Q(self):
         """
-        获取路径的其他资源（如流量等）。
+        Get other resources of the path (e.g., flow).
         """
         return self.Q
 
     def get_path(self):
         """
-        获取路径列表。
+        Get the path list.
         """
         return self.path
 
     def switch_path(self):
         """
-        反转路径。
+        Reverse the path.
         """
         self.path = self.path[::-1]
 
     def __str__(self):
         """
-        返回路径的字符串表示形式。
+        Return the string representation of the path.
         """
         return f"Route(cost={self.cost}, Q={self.Q}, path={self.path})"
 
     def __repr__(self):
         """
-        返回路径的简短字符串表示形式。
+        Return the short string representation of the path.
         """
         return self.__str__()

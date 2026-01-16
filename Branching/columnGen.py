@@ -12,28 +12,28 @@ class ColumnGeneration:
 
     def compute_col_gen(self, initial_routes):
         """
-        执行列生成算法。
+        Execute the column generation algorithm.
 
-        :param initial_routes: 初始路径列表
-        :return: 最优目标值
+        :param initial_routes: Initial route list
+        :return: Optimal objective value
         """
         #try:
-        # 初始化 Gurobi 模型
+        # Initialize Gurobi model
         model = gp.Model("Column Generation")
 
         model.setParam("OutputFlag", 0)
         model.setParam("LogToConsole", 0)
 
-        # 添加初始路径
+        # Add initial routes
         for route in initial_routes:
             cost = sum(self.paramsVRP.dist[route.path[i]][route.path[i + 1]] for i in range(len(route.path) - 1))
             route.set_cost(cost)
             self.routes.append(route)
 
-        # 创建变量和目标函数
+        # Create variables and objective function
         y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
 
-        # 添加约束：每个客户必须被服务一次
+        # Add constraints: each customer must be served once
         constraints = model.addConstrs(
             (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
              for client in range(1, self.paramsVRP.nbclients - 1)),
@@ -43,13 +43,13 @@ class ColumnGeneration:
         model.update()
         #print(constraints)
 
-        # 设置目标函数
+        # Set objective function
         model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
 
-        # 列生成主循环
+        # Column generation main loop
         iteration = 0
         while True:
-            # 求解当前模型
+            # Solve current model
             model.optimize()
             if model.status == GRB.OPTIMAL:
                 print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
@@ -70,11 +70,11 @@ class ColumnGeneration:
             '''
             #print(f"y = {y}")
 
-            # 获取对偶价格
+            # Get dual prices
             pi = [constr.Pi for constr in constraints.values()]
             #print(f"Iteration {iteration}: Objective = {model.objVal}, Pi = {pi}")
 
-            # 更新 SPPRC 的成本矩阵
+            # Update SPPRC cost matrix
             for i in range(1, self.paramsVRP.nbclients - 1):
                 for j in range(self.paramsVRP.nbclients):
                     self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
@@ -83,16 +83,16 @@ class ColumnGeneration:
                         pass
 
 
-            # 求解 SPPRC 获取新的列
+            # Solve SPPRC to get new columns
             sp = SPPRC(self.paramsVRP)
             new_routes = []
             sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 2)
             print(new_routes)
 
-            # 检查是否有新的负成本路径
+            # Check if there are new negative cost paths
             if not new_routes:
                 print("[-]No new negative cost paths found.")
-                # 检查模型状态
+                # Check model status
                 if model.status == GRB.OPTIMAL:
                     print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
                 elif model.status == GRB.INFEASIBLE:
@@ -104,13 +104,13 @@ class ColumnGeneration:
                         f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status}")
                 break
 
-            # 添加新的路径到模型
+            # Add new routes to the model
             for new_route in new_routes:
                 cost = sum(self.paramsVRP.dist[new_route.path[i]][new_route.path[i + 1]] for i in range(len(new_route.path) - 1))
                 new_route.set_cost(cost)
                 self.routes.append(new_route)
 
-                # 获取模型中的所有变量
+                # Remove all variables from the model
                 vars_to_remove = model.getVars()
                 for var in vars_to_remove:
                     model.remove(var)
@@ -118,10 +118,10 @@ class ColumnGeneration:
                 for constr in constrs_to_remove:
                     model.remove(constr)
 
-                # 创建变量和目标函数
+                # Create variables and objective function
                 y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
 
-                # 添加约束：每个客户必须被服务一次
+                # Add constraint: each customer must be served once
                 constraints = model.addConstrs(
                     (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
                      for client in range(1, self.paramsVRP.nbclients - 1)),
@@ -134,7 +134,7 @@ class ColumnGeneration:
 
             iteration += 1
             '''
-            # 检查模型状态
+            # Check model status
             if model.status == GRB.OPTIMAL:
                 print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
             elif model.status == GRB.INFEASIBLE:
@@ -145,7 +145,7 @@ class ColumnGeneration:
                 print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status}")
             '''
 
-        # 输出最终结果
+        # Output final results
         for i, route in enumerate(self.routes):
             route.set_Q(y[i].x)
             if route.Q > 0:

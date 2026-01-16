@@ -175,7 +175,7 @@ class SPPRC:
         U.add(0)
 
         # For each city, an array with the index of the corresponding labels (for dominance)
-        checkDom = [0] * self.paramsVRP.nbclients # 每个客户节点 被检查过“占优性”的节点有多少个
+        checkDom = [0] * self.paramsVRP.nbclients # Number of labels checked for dominance at each customer node
         city2labels = [[] for _ in range(self.paramsVRP.nbclients)]
         city2labels[0].append(0)
         #print("checkDom", checkDom)
@@ -198,7 +198,7 @@ class SPPRC:
                     la1, la2 = self.labels[l1], self.labels[l2]
                     if not la1.dominated and not la2.dominated and l1 != l2:
 
-                        # Q1：判断 标签2 是否被占优
+                        # Q1: Check if label 2 is dominated
                         pathdom = True
                         for k in range(1, self.paramsVRP.nbclients):
                             if not pathdom:
@@ -213,7 +213,7 @@ class SPPRC:
                             pathdom = False
 
                         pathdom = True
-                        # Q2：判断 标签1 是否被占优
+                        # Q2: Check if label 1 is dominated
                         for k in range(1, self.paramsVRP.nbclients):
                             pathdom = pathdom and (not la2.vertex_visited[k] or la1.vertex_visited[k])
                         if pathdom and la2.cost <= la1.cost and la2.ttime <= la1.ttime and la2.demand <= la1.demand:
@@ -228,7 +228,7 @@ class SPPRC:
                 city2labels[current.city].remove(c)
             cleaning = None
 
-            # 更新CheckDom：所有在city2labels的label都检查过dominance
+            # Update CheckDom: all labels in city2labels have been checked for dominance
             checkDom[current.city] = len(city2labels[current.city])
             #print(f'U:{U}, checkDom:{checkDom}')
 

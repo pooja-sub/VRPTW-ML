@@ -11,16 +11,16 @@ from logcapture import start_logging
 from datetime import datetime
 
 
-def main(datasetPath = "C:/Users/CiSTUP/Desktop/A-Branch-and-Price-Algorithm-for-VRPTW/dataset/C2_2_1.txt", SHOWFIG = False):
-    # 初始化分支定界算法
+def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances\\rc205.txt", SHOWFIG = False):
+    # Initialize branch and price algorithm
     bp = BranchAndBound()
 
-    # 初始化问题实例
+    # Initialize problem instance
     user_param = ParamsVRP()
     user_param.init_params(datasetPath)
     dataset_name = user_param.datasetName
 
-    # 初始化初始路径和最佳路径列表
+    # Initialize initial routes and best routes lists
     init_routes = []
     for i in range(user_param.nbclients - 2):
         route_cost = user_param.dist[0][i + 1] + user_param.dist[i + 1][user_param.nbclients - 1]
@@ -28,17 +28,17 @@ def main(datasetPath = "C:/Users/CiSTUP/Desktop/A-Branch-and-Price-Algorithm-for
         init_routes.append(route)
     best_routes = []
 
-    # 开始计时
+    # Start timing
     start_time = time.time()
 
-    # 执行分支定界算法
+    # Execute branch and bound algorithm
     bp.bb_node(user_param, init_routes, None, best_routes, 0)
 
-    # 结束计时
+    # End timing
     end_time = time.time()
     sol_time = end_time - start_time
 
-    # 计算最佳路径的成本
+    # Calculate optimal cost
     opt_cost = 0
     print("\nSolution >>>")
     for route in best_routes:
@@ -48,19 +48,19 @@ def main(datasetPath = "C:/Users/CiSTUP/Desktop/A-Branch-and-Price-Algorithm-for
     print(f"\nBest Cost = {opt_cost}")
     print(f"Total Time = {sol_time:.2f} seconds")
 
-    # 可视化解
-    solVis(user_param, best_routes, sol_time, opt_cost, dataset_name, SHOWFIG)
+    # Visualize solution
+    # solVis(user_param, best_routes, sol_time, opt_cost, dataset_name, SHOWFIG)
 
 
-def BatchMain(folder_path="C:/Users/CiSTUP/Desktop/A-Branch-and-Price-Algorithm-for-VRPTW/dataset", banned_datasets=("c110_1","c101")):
+def BatchMain(folder_path="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances", banned_datasets=()):
 
     datasetBatch = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.txt')]
 
-    # 删除不想要的数据集
+    # Remove unwanted datasets
     datasetBan = [os.path.join(folder_path, f"{ds}.txt") for ds in banned_datasets]
     datasetBatch = [ds for ds in datasetBatch if ds not in datasetBan]
 
-    # 对每个数据集调用main函数
+    # Call main function for each dataset
     for dataset in datasetBatch:
         print(f"Processing dataset: {dataset}")
         main(dataset)
@@ -70,10 +70,10 @@ if __name__ == "__main__":
     # Start logging to a timestamped file (also tee to console)
     start_logging()
 
-    # 单数据集处理
-    main(datasetPath="C:/Users/CiSTUP/Desktop/A-Branch-and-Price-Algorithm-for-VRPTW/dataset/C2_2_1.txt", SHOWFIG=True)
+    # Single dataset processing
+    main(datasetPath="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances\\rc205.txt", SHOWFIG=True)
 
-    # 批量处理数据集
+    # Batch processing datasets
     #BatchMain(folder_path="F:/absolutePythonProject/universalPythonProject/BP-VRPTW/dataset", banned_datasets=["c110_1", "c101"])
 
 
