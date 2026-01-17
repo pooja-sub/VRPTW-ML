@@ -4,7 +4,7 @@ import numpy as np
 # for the Branch and Price CVRP with TW
 
 class ParamsVRP:
-    def __init__(self, nbclients, capacity, mvehic, speed=1.0, service_in_tw=False):
+    def __init__(self, nbclients=100, capacity=0, mvehic=0, speed=1.0, service_in_tw=False):
         """
         Initialize parameter class for storing and processing Vehicle Routing Problem (VRP) parameters.
 
@@ -244,88 +244,88 @@ class ParamsVRP:
         print(f"[Arc preprocessing complete] Eliminated {eliminated_count} out of {total_arcs} arcs")
         print(f"[Remaining arcs: {total_arcs - eliminated_count}]")
 
-def strengthen_time_windows_cyclic(self):
-    """
-    Apply cyclic time window strengthening using four rules.
-    Based on Desrochers, Desrosiers and Solomon (1992).
-    """
+    def strengthen_time_windows_cyclic(self):
+        """
+        Apply cyclic time window strengthening using four rules.
+        Based on Desrochers, Desrosiers and Solomon (1992).
+        """
 
-    print("[Starting cyclic time window strengthening]")
+        print("[Starting cyclic time window strengthening]")
 
-    max_iterations = 10
-    iteration = 0
+        max_iterations = 10
+        iteration = 0
 
-    while iteration < max_iterations:
-        iteration += 1
-        changed = False
-        print(f"  [Iteration {iteration}]")
+        while iteration < max_iterations:
+            iteration += 1
+            changed = False
+            print(f"  [Iteration {iteration}]")
 
-        # Save windows at start of cycle
-        a_old = self.a.copy()
-        b_old = self.b.copy()
+            # Save windows at start of cycle
+            a_old = self.a.copy()
+            b_old = self.b.copy()
 
-        # =========================
-        # Rule 1: from predecessors
-        # =========================
-        a1 = a_old.copy()
-        for l in range(1, self.nbclients):
-            min_arrival = self.verybig
-            for i in range(self.nbclients + 2):
-                if i != l and self.dist[i][l] < self.verybig - 1e-6:
-                    min_arrival = min(min_arrival, a_old[i] + self.ttime[i][l])
+            # =========================
+            # Rule 1: from predecessors
+            # =========================
+            a1 = a_old.copy()
+            for l in range(1, self.nbclients):
+                min_arrival = self.verybig
+                for i in range(self.nbclients + 2):
+                    if i != l and self.dist[i][l] < self.verybig - 1e-6:
+                        min_arrival = min(min_arrival, a_old[i] + self.ttime[i][l])
 
-            if min_arrival < self.verybig:
-                a1[l] = max(a_old[l], min(b_old[l], min_arrival))
+                if min_arrival < self.verybig:
+                    a1[l] = max(a_old[l], min(b_old[l], min_arrival))
 
-        # =========================
-        # Rule 2: to successors
-        # =========================
-        a2 = a1.copy()
-        for l in range(1, self.nbclients):
-            min_arrival = self.verybig
-            for j in range(self.nbclients + 2):
-                if j != l and self.dist[l][j] < self.verybig - 1e-6:
-                    min_arrival = min(min_arrival, a1[j] - self.ttime[l][j])
+            # =========================
+            # Rule 2: to successors
+            # =========================
+            a2 = a1.copy()
+            for l in range(1, self.nbclients):
+                min_arrival = self.verybig
+                for j in range(self.nbclients + 2):
+                    if j != l and self.dist[l][j] < self.verybig - 1e-6:
+                        min_arrival = min(min_arrival, a1[j] - self.ttime[l][j])
 
-            if min_arrival < self.verybig:
-                a2[l] = max(a1[l], min(b_old[l], min_arrival))
+                if min_arrival < self.verybig:
+                    a2[l] = max(a1[l], min(b_old[l], min_arrival))
 
-        # =========================
-        # Rule 3: from predecessors
-        # =========================
-        b3 = b_old.copy()
-        for l in range(1, self.nbclients):
-            max_departure = a2[l]
-            for i in range(self.nbclients + 2):
-                if i != l and self.dist[i][l] < self.verybig - 1e-6:
-                    max_departure = max(max_departure, b_old[i] + self.ttime[i][l])
+            # =========================
+            # Rule 3: from predecessors
+            # =========================
+            b3 = b_old.copy()
+            for l in range(1, self.nbclients):
+                max_departure = a2[l]
+                for i in range(self.nbclients + 2):
+                    if i != l and self.dist[i][l] < self.verybig - 1e-6:
+                        max_departure = max(max_departure, b_old[i] + self.ttime[i][l])
 
-            b3[l] = min(b_old[l], max_departure)
+                b3[l] = min(b_old[l], max_departure)
 
-        # =========================
-        # Rule 4: to successors
-        # =========================
-        b4 = b3.copy()
-        for l in range(1, self.nbclients):
-            max_departure = a2[l]
-            for j in range(self.nbclients + 2):
-                if j != l and self.dist[l][j] < self.verybig - 1e-6:
-                    max_departure = max(max_departure, b3[j] - self.ttime[l][j])
+            # =========================
+            # Rule 4: to successors
+            # =========================
+            b4 = b3.copy()
+            for l in range(1, self.nbclients):
+                max_departure = a2[l]
+                for j in range(self.nbclients + 2):
+                    if j != l and self.dist[l][j] < self.verybig - 1e-6:
+                        max_departure = max(max_departure, b3[j] - self.ttime[l][j])
 
-            b4[l] = min(b3[l], max_departure)
+                b4[l] = min(b3[l], max_departure)
 
-        # =========================
-        # Convergence check
-        # =========================
-        if a2 != self.a or b4 != self.b:
-            changed = True
-            self.a = a2
-            self.b = b4
+            # =========================
+            # Convergence check
+            # =========================
+            if not np.array_equal(a2, self.a) or not np.array_equal(b4, self.b):
+                changed = True
+                self.a = a2
+                self.b = b4
 
-        if not changed:
-            break
+            if not changed:
+                break
 
-    print(f"[Cyclic time window strengthening complete] Iterations: {iteration}")
+        print(f"[Cyclic time window strengthening complete] Iterations: {iteration}")
 
 
     def __str__(self):

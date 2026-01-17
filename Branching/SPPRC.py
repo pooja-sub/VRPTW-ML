@@ -75,8 +75,8 @@ class SPPRC:
                         else:
                             i = 0
                             while i < self.parent.paramsVRP.nbclients:
-                                if A.vertex_visited[i] != B.vertex_visited[i]:
-                                    if A.vertex_visited[i]:
+                                if self.vertex_visited[i] != other.vertex_visited[i]:
+                                    if self.vertex_visited[i]:
                                         return True
                                     else:
                                         return False
@@ -159,9 +159,34 @@ class SPPRC:
         '''
 
 
-    def shortestPath(self, userParamArg, routes, nbroute):
-        print("[---SPPRC.shortestPath called---]")
+    def shortestPath(self, userParamArg, routes, nbroute, early_stop=True, 
+                     lambda_pricing=True, lambda_factor=2.0, dual_pi=None, max_columns=None):
+        '''
+        This function implements the label-setting algorithm from Irnish and Desaulniers
+        with multi-column selection using filtering rules.
+
+        NOTE - this code implements 3 techniques
+        1. dominance
+        2. time-window strengthening (implemented in parametervehicle routing)
+        3. early elimination of customers (speedup 3) -> Feillet et al. (2004), p. 495, Section 4.4
+        
+          FILTERING RULES:
+          1. Lambda Pricing Rule (Bixby et al., 1992) - Ratio only:
+              - l(π) = min{c_x / (π^T a_x) | π^T a_x > 0}
+              - Keep columns with c_x / (π^T a_x) ≤ λ · l(π)
+              - Good for set partitioning problems
+              - Keeps richer columns (more non-zero entries) in addition to most negative
+        
+        :param early_stop: If True, stop as soon as one negative cost route is found.
+        :param lambda_pricing: If True, apply lambda pricing rule (ratio-based)
+        :param lambda_factor: Multiplier for lambda pricing rule (default 2.0)
+        :param dual_pi: List of dual values π for customers to compute π^T a_x
+        :param max_columns: Maximum number of columns to keep.
+        '''
+        print(f"[---SPPRC.shortestPath called---] early_stop={early_stop}, lambda_pricing={lambda_pricing}")
         self.paramsVRP = userParamArg
+        if max_columns is None:
+            max_columns = 2 * nbroute
 
         # Initialize unprocessed labels list (U) and processed labels list (P)
         U = SortedSet(key=lambda x: x)
@@ -182,7 +207,8 @@ class SPPRC:
         #print("city2labels:", city2labels)
 
         nbsol = 0
-        maxsol = 2 * nbroute
+        maxsol = max_columns
+        min_cost = None  # Track minimum cost for lambda pricing
 
         while U and nbsol < maxsol:
             #print("U:", U)
@@ -240,6 +266,15 @@ class SPPRC:
                         P.add(current_idx)
                         #print(f'[current_idx ADDED]:{current_idx}')
                         nbsol = sum(1 for labi in P if not self.labels[labi].dominated)
+                        
+                        # Track minimum cost for lambda pricing
+                        if min_cost is None or current.cost < min_cost:
+                            min_cost = current.cost
+                        
+                        # Early stopping: if enabled and we found a negative cost route, stop
+                        if early_stop and nbsol >= 1:
+                            print(f"  [Early Stop] Found negative cost route, stopping SPPRC early")
+                            break
                 else:  # If not the depot, we can consider extensions of the path
                     for i in range(self.paramsVRP.nbclients + 2):
                         if not current.vertex_visited[i] and self.paramsVRP.dist[current.city][i] < self.paramsVRP.verybig - 1e-6:
@@ -271,20 +306,79 @@ class SPPRC:
                                     self.labels[idx].dominated = True
 
         # Filtering: find the path from depot to the destination
+        # Apply filtering rules before converting labels to routes
+        valid_labels = []
+        
+        for lab_idx in P:
+            if not self.labels[lab_idx].dominated and self.labels[lab_idx].cost < -1e-4:
+                valid_labels.append((lab_idx, self.labels[lab_idx].cost))
+        
+        # Sort by cost (most negative first)
+        valid_labels.sort(key=lambda x: x[1])
+        
+        # Apply lambda pricing rule if enabled (ratio-only)
+        # Lambda pricing rule (Bixby et al., 1992):
+        # Define ratio r_x = (-c_x) / (π^T a_x) for columns with c_x < 0 and π^T a_x > 0
+        # l(π) = min_{x∈X} r_x
+        # Keep columns with r_x ≤ λ · l(π)
+        if lambda_pricing and valid_labels:
+            ratios = []
+            for lab_idx, cost in valid_labels:
+                # Reconstruct the route path to compute π^T a_x from duals
+                path = []
+                path_idx = lab_idx
+                while path_idx >= 0:
+                    path.append(self.labels[path_idx].city)
+                    path_idx = self.labels[path_idx].index_prev_label
+                path.reverse()
+
+                # Compute π^T a_x using provided duals
+                pi_T_ax = 0.0
+                if dual_pi is not None:
+                    for city in path[1:-1]:  # Exclude depots
+                        if 1 <= city < self.paramsVRP.nbclients:
+                            pi_T_ax += dual_pi[city - 1]
+
+                # Only consider columns with π^T a_x > 0 to avoid division by zero
+                if pi_T_ax > 1e-9:
+                    # cost is reduced cost and negative for improving columns; use -cost for positive ratio
+                    ratio = (-cost) / pi_T_ax
+                    ratios.append((lab_idx, cost, ratio))
+
+            if ratios:
+                ratios.sort(key=lambda x: x[2])
+                min_ratio = ratios[0][2]  # l(π), now positive
+                lambda_threshold = lambda_factor * min_ratio
+
+                # Keep columns with ratio ≤ threshold
+                valid_labels = [(lab_idx, cost) for lab_idx, cost, ratio in ratios
+                                if ratio <= lambda_threshold]
+
+                print(f"  [Lambda Pricing (Ratio) - Bixby et al., 1992]")
+                print(f"    l(π) = min((-c_x) / π^T a_x) = {min_ratio:.4f}")
+                print(f"    λ · l(π) = {lambda_factor} × {min_ratio:.4f} = {lambda_threshold:.4f}")
+                print(f"    Kept {len(valid_labels)} columns under ratio threshold")
+        
+        # Convert labels to routes
         i = 0
         checkDom = None
-        while i < nbroute and P:
-            lab = P.pop(0)
-            if not self.labels[lab].dominated:
-                if self.labels[lab].cost < -1e-4:
-                    route = Route()
-                    route.set_cost(self.labels[lab].cost)
-                    route.add_city(self.labels[lab].city)
-                    path = self.labels[lab].index_prev_label
-                    while path >= 0:
-                        route.add_city(self.labels[path].city)
-                        path = self.labels[path].index_prev_label
-                    route.switch_path()
-                    routes.append(route)
-                    #print(f'[route ADDED]:{route}', f'[route.cost]:{route.get_cost()}', f'[route.path]:{route.get_path()}')
-                    i += 1
+        for lab_idx, cost in valid_labels:
+            if i >= nbroute:
+                break
+            
+            route = Route()
+            route.set_cost(self.labels[lab_idx].cost)
+            route.add_city(self.labels[lab_idx].city)
+            path = self.labels[lab_idx].index_prev_label
+            while path >= 0:
+                route.add_city(self.labels[path].city)
+                path = self.labels[path].index_prev_label
+            route.switch_path()
+            routes.append(route)
+            i += 1
+        
+        if routes:
+            print(f"  [Columns Generated] {len(routes)} columns returned, costs: {[r.cost for r in routes]}")
+
+        # Return label indices and costs used for ratio filtering (not used by caller currently)
+        return valid_labels
