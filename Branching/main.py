@@ -11,7 +11,7 @@ from logcapture import start_logging
 from datetime import datetime
 
 
-def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances\\rc205.txt", SHOWFIG = False):
+def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances\\c101.txt", SHOWFIG = False):
     # Initialize branch and price algorithm
     bp = BranchAndBound()
 
@@ -20,13 +20,17 @@ def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100
     user_param.init_params(datasetPath)
     dataset_name = user_param.datasetName
 
-    # Initialize initial routes and best routes lists
+    # Initialize initial routes and best routes lists (only for feasible arcs)
     init_routes = []
-    for i in range(user_param.nbclients - 2):
-        route_cost = user_param.dist[0][i + 1] + user_param.dist[i + 1][user_param.nbclients - 1]
-        route = Route(path=[0, i + 1, user_param.nbclients - 1], cost=route_cost, Q=1.0)
-        init_routes.append(route)
+    for i in range(1, user_param.nbclients):
+        # Only create route if both arcs are feasible (not eliminated by preprocessing)
+        if (user_param.dist[0][i] < user_param.verybig - 1e-6 and 
+            user_param.dist[i][user_param.nbclients] < user_param.verybig - 1e-6):
+            route_cost = user_param.dist[0][i] + user_param.dist[i][user_param.nbclients]
+            route = Route(path=[0, i, user_param.nbclients], cost=route_cost, Q=1.0)
+            init_routes.append(route)
     best_routes = []
+    print(f"[Initial feasible routes created: {len(init_routes)} out of {user_param.nbclients - 1} customers]")
 
     # Start timing
     start_time = time.time()
@@ -52,7 +56,7 @@ def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100
     # solVis(user_param, best_routes, sol_time, opt_cost, dataset_name, SHOWFIG)
 
 
-def BatchMain(folder_path="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances", banned_datasets=()):
+def BatchMain(folder_path="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_50_customer_instances", banned_datasets=()):
 
     datasetBatch = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.txt')]
 
@@ -71,7 +75,7 @@ if __name__ == "__main__":
     start_logging()
 
     # Single dataset processing
-    main(datasetPath="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances\\rc205.txt", SHOWFIG=True)
+    main(datasetPath="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100_customer_instances\\c102.txt", SHOWFIG=True)
 
     # Batch processing datasets
     #BatchMain(folder_path="F:/absolutePythonProject/universalPythonProject/BP-VRPTW/dataset", banned_datasets=["c110_1", "c101"])

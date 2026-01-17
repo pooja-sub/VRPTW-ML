@@ -36,7 +36,7 @@ class ColumnGeneration:
         # Add constraints: each customer must be served once
         constraints = model.addConstrs(
             (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-             for client in range(1, self.paramsVRP.nbclients - 1)),
+             for client in range(1, self.paramsVRP.nbclients)),
             "ClientService"
         )
 
@@ -75,8 +75,8 @@ class ColumnGeneration:
             #print(f"Iteration {iteration}: Objective = {model.objVal}, Pi = {pi}")
 
             # Update SPPRC cost matrix
-            for i in range(1, self.paramsVRP.nbclients - 1):
-                for j in range(self.paramsVRP.nbclients):
+            for i in range(1, self.paramsVRP.nbclients):
+                for j in range(self.paramsVRP.nbclients + 2):
                     self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
                     if self.paramsVRP.cost[i][j] < 0:
                         #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
@@ -86,7 +86,7 @@ class ColumnGeneration:
             # Solve SPPRC to get new columns
             sp = SPPRC(self.paramsVRP)
             new_routes = []
-            sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 2)
+            sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1)
             print(new_routes)
 
             # Check if there are new negative cost paths
@@ -124,7 +124,7 @@ class ColumnGeneration:
                 # Add constraint: each customer must be served once
                 constraints = model.addConstrs(
                     (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-                     for client in range(1, self.paramsVRP.nbclients - 1)),
+                     for client in range(1, self.paramsVRP.nbclients)),
                     "ClientService"
                 )
 

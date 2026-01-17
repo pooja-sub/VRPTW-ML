@@ -29,7 +29,7 @@ class BranchAndBound:
                 if branching.branch_from != 0:  # Not from depot
                     user_param.dist[branching.branch_from][:] = user_param.verybig
                     user_param.dist[branching.branch_from][branching.branch_to] = user_param.dist_base[branching.branch_from][branching.branch_to]
-                if branching.branch_to != user_param.nbclients + 1:  # Not to depot
+                if branching.branch_to != user_param.nbclients:  # Not to depot
                     user_param.dist[:, branching.branch_to] = user_param.verybig
                     user_param.dist[branching.branch_from][branching.branch_to] = user_param.dist_base[branching.branch_from][branching.branch_to]
                 user_param.dist[branching.branch_to][branching.branch_from] = user_param.verybig  # Forbid reverse edge

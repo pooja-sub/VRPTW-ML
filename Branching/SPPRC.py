@@ -169,14 +169,14 @@ class SPPRC:
 
         # Initialize labels array        labels = []
         # for depot 0
-        cust = [False] * (self.paramsVRP.nbclients)
+        cust = [False] * (self.paramsVRP.nbclients + 2)
         cust[0] = True
         self.labels.append(self.label(0, -1, 0.0, 0, 0, False, cust, self))  # First label: start from depot (client 0)
         U.add(0)
 
         # For each city, an array with the index of the corresponding labels (for dominance)
-        checkDom = [0] * self.paramsVRP.nbclients # Number of labels checked for dominance at each customer node
-        city2labels = [[] for _ in range(self.paramsVRP.nbclients)]
+        checkDom = [0] * (self.paramsVRP.nbclients + 2) # Number of labels checked for dominance at each customer node
+        city2labels = [[] for _ in range(self.paramsVRP.nbclients + 2)]
         city2labels[0].append(0)
         #print("checkDom", checkDom)
         #print("city2labels:", city2labels)
@@ -200,7 +200,7 @@ class SPPRC:
 
                         # Q1: Check if label 2 is dominated
                         pathdom = True
-                        for k in range(1, self.paramsVRP.nbclients):
+                        for k in range(1, self.paramsVRP.nbclients + 2):
                             if not pathdom:
                                 break
                             pathdom = pathdom and (not la1.vertex_visited[k] or la2.vertex_visited[k])
@@ -214,7 +214,7 @@ class SPPRC:
 
                         pathdom = True
                         # Q2: Check if label 1 is dominated
-                        for k in range(1, self.paramsVRP.nbclients):
+                        for k in range(1, self.paramsVRP.nbclients + 2):
                             pathdom = pathdom and (not la2.vertex_visited[k] or la1.vertex_visited[k])
                         if pathdom and la2.cost <= la1.cost and la2.ttime <= la1.ttime and la2.demand <= la1.demand:
                             #print(f'U:{U}')
@@ -235,15 +235,16 @@ class SPPRC:
             # Expand REF
             if not current.dominated:
                 #print(f'[current_idx]:{current_idx} is not dominated')
-                if current.city == self.paramsVRP.nbclients - 1:  # Shortest path candidate to the depot!
+                if current.city == self.paramsVRP.nbclients:  # Shortest path candidate to the depot!
                     if current.cost < -1e-7:  # SP candidate for the column generation
                         P.add(current_idx)
                         #print(f'[current_idx ADDED]:{current_idx}')
                         nbsol = sum(1 for labi in P if not self.labels[labi].dominated)
                 else:  # If not the depot, we can consider extensions of the path
-                    for i in range(self.paramsVRP.nbclients):
+                    for i in range(self.paramsVRP.nbclients + 2):
                         if not current.vertex_visited[i] and self.paramsVRP.dist[current.city][i] < self.paramsVRP.verybig - 1e-6:
-                            tt = current.ttime + self.paramsVRP.ttime[current.city][i] + self.paramsVRP.s[current.city]
+                            # ttime already includes service time at current.city
+                            tt = current.ttime + self.paramsVRP.ttime[current.city][i]
                             if tt < self.paramsVRP.a[i]:
                                 tt = self.paramsVRP.a[i]
                             d = current.demand + self.paramsVRP.d[i]
@@ -254,9 +255,10 @@ class SPPRC:
                                 newcust[i] = True
 
                                 # Speedup: third technique - Feillet 2004 as mentioned in Laporte's paper
-                                for j in range(1, self.paramsVRP.nbclients - 1):
+                                for j in range(1, self.paramsVRP.nbclients):
                                     if not newcust[j]:
-                                        tt2 = tt + self.paramsVRP.ttime[i][j] + self.paramsVRP.s[i]
+                                        # ttime[i][j] already includes service time at i
+                                        tt2 = tt + self.paramsVRP.ttime[i][j]
                                         d2 = d + self.paramsVRP.d[j]
                                         if tt2 > self.paramsVRP.b[j] or d2 > self.paramsVRP.capacity:
                                             newcust[j] = True
