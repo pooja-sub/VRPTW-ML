@@ -7,10 +7,11 @@ import numpy as np
 import copy
 
 class BranchAndBound:
-    def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False):
+    def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False, gap_threshold=None):
         self.lowerbound = -1e10
         self.upperbound = 1e10
         self.bb_node_count = 0  # Track number of BB nodes processed
+        self.gap_threshold = gap_threshold  # Optional override for stopping criterion
         
         # Acceleration technique flags
         self.enable_column_deletion = enable_column_deletion
@@ -70,8 +71,9 @@ class BranchAndBound:
         if not branching is None:
             print(f"[bb_node initiated] Node={self.bb_node_count} | Depth = {depth} | routes = {routes}")
         # Check if we need to solve this node
-        if (self.upperbound - self.lowerbound) / self.upperbound < user_param.gap:
-            print(f'[bb_node terminated] GAP SATISFIED')
+        gap_limit = self.gap_threshold if self.gap_threshold is not None else user_param.gap
+        if (self.upperbound - self.lowerbound) / self.upperbound < gap_limit:
+            print(f'[bb_node terminated] GAP SATISFIED (threshold={gap_limit})')
             return True
 
         # Initialize root node
@@ -89,7 +91,7 @@ class BranchAndBound:
                          enable_column_deletion=self.enable_column_deletion,
                          deletion_threshold=self.deletion_threshold,
                          lambda_pricing=False,
-                         num_columns_to_keep=30)
+                         num_columns_to_keep=10000)
         cg_obj, routes = column_gen.compute_col_gen(routes, self.lowerbound, self.upperbound, 
                                 fix_interval=10, bb_node_count=self.bb_node_count,
                                 early_stop_pricing=self.enable_early_stop,

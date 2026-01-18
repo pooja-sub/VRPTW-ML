@@ -156,7 +156,8 @@ def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100
          SHOWFIG = False,
          enable_column_deletion = True,     # Enable column deletion acceleration
          deletion_threshold = 20,            # Delete routes not in basis for this many BB nodes
-         enable_early_stop_pricing = False): # Enable early stopping in SPPRC (disabled by default)
+         enable_early_stop_pricing = False, # Enable early stopping in SPPRC (disabled by default)
+         gap_threshold = None):             # Optional optimality gap to stop early
     """
     Main function to solve VRPTW using Branch-and-Price with acceleration techniques.
     
@@ -171,11 +172,13 @@ def main(datasetPath = "C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_100
     :param enable_column_deletion: Enable/disable column deletion
     :param deletion_threshold: Number of BB nodes before deleting inactive routes
     :param enable_early_stop_pricing: Enable/disable early stopping in pricing subproblem
+    :param gap_threshold: Optional gap threshold override to terminate early (defaults to ParamsVRP.gap)
     """
     # Initialize branch and price algorithm with acceleration parameters
     bp = BranchAndBound(enable_column_deletion=enable_column_deletion,
                        deletion_threshold=deletion_threshold,
-                       enable_early_stop=enable_early_stop_pricing)
+                       enable_early_stop=enable_early_stop_pricing,
+                       gap_threshold=gap_threshold)
 
     # Initialize problem instance
     user_param = ParamsVRP()

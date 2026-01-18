@@ -254,12 +254,12 @@ class ColumnGeneration:
                             old_to_new[old_idx] = new_idx
                             new_idx += 1
                     
-                    # Update route_last_basis_node with new indices
-                    new_route_last_basis_node = {}
-                    for old_idx, node in self.route_last_basis_node.items():
+                    # Update route_last_basis_iteration with new indices
+                    new_route_last_basis_iteration = {}
+                    for old_idx, iteration in self.route_last_basis_iteration.items():
                         if old_idx in old_to_new:
-                            new_route_last_basis_node[old_to_new[old_idx]] = node
-                    self.route_last_basis_node = new_route_last_basis_node
+                            new_route_last_basis_iteration[old_to_new[old_idx]] = iteration
+                    self.route_last_basis_iteration = new_route_last_basis_iteration
                     
                     # Update routes and reset fixed_routes
                     self.routes = active_routes
