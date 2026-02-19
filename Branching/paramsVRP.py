@@ -243,6 +243,55 @@ class ParamsVRP:
         
         print(f"[Arc preprocessing complete] Eliminated {eliminated_count} out of {total_arcs} arcs")
         print(f"[Remaining arcs: {total_arcs - eliminated_count}]")
+        
+        # Calculate and display arc degree statistics
+        self.calculate_arc_degree_statistics()
+
+    def calculate_arc_degree_statistics(self):
+        """
+        Calculate and display arc degree statistics after preprocessing.
+        
+        The degree of a node is the number of feasible arcs incident to it.
+        This includes both incoming and outgoing arcs.
+        
+        Displays:
+        - Average degree across all nodes
+        - Minimum degree among all nodes
+        - Maximum degree among all nodes
+        """
+        # Use only the actual nodes (start depot + customers + end depot)
+        # There is one extra padded row/column in the matrices because of historical +2 sizing;
+        # we ignore that dummy node here to avoid inflating degrees.
+        node_count = self.nbclients + 1  # indices 0..self.nbclients
+
+        # Count incoming and outgoing arcs for each real node
+        in_degree = np.zeros(node_count)
+        out_degree = np.zeros(node_count)
+        
+        for i in range(node_count):
+            for j in range(node_count):
+                # Check if arc (i,j) is feasible (not eliminated)
+                if self.dist[i][j] < self.verybig - 1e-6:
+                    out_degree[i] += 1
+                    in_degree[j] += 1
+        
+        # Calculate total degree (in + out) for each node
+        total_degree = in_degree + out_degree
+        
+        # Exclude depots (0 and nbclients) from statistics to focus on customer nodes
+        customer_degrees = total_degree[1:self.nbclients]
+        
+        if len(customer_degrees) > 0:
+            avg_degree = np.mean(customer_degrees)
+            min_degree = np.min(customer_degrees)
+            max_degree = np.max(customer_degrees)
+            
+            print(f"[Arc Degree Statistics (for customer nodes)]")
+            print(f"  Average degree: {avg_degree:.2f}")
+            print(f"  Minimum degree: {int(min_degree)}")
+            print(f"  Maximum degree: {int(max_degree)}")
+        else:
+            print(f"[Arc Degree Statistics] No customer nodes to analyze")
 
     def strengthen_time_windows_cyclic(self):
         """

@@ -160,7 +160,8 @@ class SPPRC:
 
 
     def shortestPath(self, userParamArg, routes, nbroute, early_stop=True, 
-                     lambda_pricing=True, lambda_factor=2.0, dual_pi=None, max_columns=None):
+                     lambda_pricing=True, lambda_factor=2.0, dual_pi=None, max_columns=None,
+                     eliminated_customers=None, min_columns_early_stop=10):
         '''
         This function implements the label-setting algorithm from Irnish and Desaulniers
         with multi-column selection using filtering rules.
@@ -176,14 +177,24 @@ class SPPRC:
               - Keep columns with c_x / (π^T a_x) ≤ λ · l(π)
               - Good for set partitioning problems
               - Keeps richer columns (more non-zero entries) in addition to most negative
+          
+          2. Node Elimination by Dual Values:
+              - Eliminate customers with very high negative dual values
+              - These customers make it harder to achieve negative reduced cost
+              - Controlled by eliminated_customers parameter
         
-        :param early_stop: If True, stop as soon as one negative cost route is found.
+        :param early_stop: If True, stop as soon as min_columns_early_stop negative cost routes are found.
         :param lambda_pricing: If True, apply lambda pricing rule (ratio-based)
         :param lambda_factor: Multiplier for lambda pricing rule (default 2.0)
         :param dual_pi: List of dual values π for customers to compute π^T a_x
         :param max_columns: Maximum number of columns to keep.
+        :param eliminated_customers: Set of customer IDs (1-indexed) to eliminate from pricing.
+        :param min_columns_early_stop: Minimum number of columns to generate before early stopping (default 10).
         '''
-        print(f"[---SPPRC.shortestPath called---] early_stop={early_stop}, lambda_pricing={lambda_pricing}")
+        if eliminated_customers is None:
+            eliminated_customers = set()
+        
+        print(f"[---SPPRC.shortestPath called---] early_stop={early_stop}, lambda_pricing={lambda_pricing}, min_columns_early_stop={min_columns_early_stop}, eliminated_customers={eliminated_customers}")
         self.paramsVRP = userParamArg
         if max_columns is None:
             max_columns = 2 * nbroute
@@ -271,12 +282,16 @@ class SPPRC:
                         if min_cost is None or current.cost < min_cost:
                             min_cost = current.cost
                         
-                        # Early stopping: if enabled and we found a negative cost route, stop
-                        if early_stop and nbsol >= 1:
-                            print(f"  [Early Stop] Found negative cost route, stopping SPPRC early")
+                        # Early stopping: if enabled and we found enough negative cost routes, stop
+                        if early_stop and nbsol >= min_columns_early_stop:
+                            print(f"  [Early Stop] Found {nbsol} negative cost routes (>= {min_columns_early_stop}), stopping label exploration.")
                             break
                 else:  # If not the depot, we can consider extensions of the path
                     for i in range(self.paramsVRP.nbclients + 2):
+                        # Skip eliminated customers (node elimination strategy)
+                        if i in eliminated_customers:
+                            continue
+                        
                         if not current.vertex_visited[i] and self.paramsVRP.dist[current.city][i] < self.paramsVRP.verybig - 1e-6:
                             # ttime already includes service time at current.city
                             tt = current.ttime + self.paramsVRP.ttime[current.city][i]

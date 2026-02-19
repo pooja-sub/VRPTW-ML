@@ -4,10 +4,12 @@ from paramsVRP import ParamsVRP
 from route import Route
 from SPPRC import SPPRC
 import numpy as np
+import time
 
 class ColumnGeneration:
     def __init__(self, user_param, enable_column_deletion=True, deletion_threshold=20, min_nonbasic_columns=10,
-                 lambda_pricing=True, lambda_factor=2.0, num_columns_to_keep=10):
+                 lambda_pricing=True, lambda_factor=2.0, num_columns_to_keep=10,
+                 enable_node_elimination=False, node_elimination_threshold=1.5):
         self.paramsVRP = user_param
         self.routes = []
         self.fixed_routes = set()  # Track indices of permanently eliminated routes
@@ -23,6 +25,15 @@ class ColumnGeneration:
         self.lambda_pricing = lambda_pricing  # Apply lambda pricing rule (ratio-based)
         self.lambda_factor = lambda_factor  # Multiplier for lambda pricing
         self.num_columns_to_keep = num_columns_to_keep  # Number of columns to keep per iteration
+        
+        # Node elimination parameters
+        self.enable_node_elimination = enable_node_elimination  # Enable/disable node elimination strategy
+        self.node_elimination_threshold = node_elimination_threshold  # Multiplier for identifying high negative duals
+        self.eliminated_customers = set()  # Track eliminated customers per pricing iteration
+        
+        # Timing statistics
+        self.rmp_time = 0.0  # Cumulative time spent on RMP (Restricted Master Problem)
+        self.pp_time = 0.0   # Cumulative time spent on PP (Pricing Problem)
 
     def fix_variables_by_reduced_cost(self, model, y, lower_bound, upper_bound, constraints):
         """
@@ -93,7 +104,11 @@ class ColumnGeneration:
             return 0
         
         # Get basis status for all variables
+        rmp_start = time.time()
         model.optimize()
+        rmp_end = time.time()
+        self.rmp_time += (rmp_end - rmp_start)
+        
         if model.status != GRB.OPTIMAL:
             return 0
         
@@ -134,6 +149,63 @@ class ColumnGeneration:
                 self.fixed_routes.add(i)
         
         return len(routes_to_delete)
+    
+    def eliminate_nodes_by_dual_values(self, pi):
+        """
+        Node elimination strategy: eliminate customers with very high negative dual values.
+        
+        A customer with a very low (highly negative) dual value π[c] << 0 makes it harder to achieve 
+        negative reduced cost when including that customer in a route, since -π[c] becomes a large 
+        positive contribution to the reduced cost.
+        
+        This method identifies customers whose dual values are extreme outliers on the negative side
+        (more negative than Q1 - threshold * IQR, using interquartile range method).
+        
+        :param pi: List of dual values for customers (π[0] corresponds to customer 1)
+        :return: Set of eliminated customer indices (1-indexed)
+        """
+        self.eliminated_customers = set()
+        
+        if not self.enable_node_elimination or len(pi) == 0:
+            return self.eliminated_customers
+        
+        # Sort dual values to compute quartiles
+        sorted_duals = sorted(pi)
+        n = len(pi)
+        
+        # Compute Q1 (25th percentile) and Q3 (75th percentile)
+        q1 = sorted_duals[n // 4]
+        q3 = sorted_duals[3 * n // 4]
+        iqr = q3 - q1  # Interquartile range
+        
+        # Outlier threshold: values below Q1 - threshold * IQR are considered extreme negative outliers
+        # Standard outlier detection uses threshold=1.5, but we make it configurable
+        dual_threshold = q1 - self.node_elimination_threshold * iqr
+        
+        # Identify and eliminate customers with dual values below threshold (extreme negative)
+        for customer_idx, dual_value in enumerate(pi):
+            if dual_value < dual_threshold:
+                # Convert to 1-indexed customer number
+                customer_id = customer_idx + 1
+                self.eliminated_customers.add(customer_id)
+        
+        if self.eliminated_customers:
+            min_dual = min(pi)
+            max_dual = max(pi)
+            print(f"  [Node Elimination] Eliminated {len(self.eliminated_customers)} customers with extreme negative duals")
+            print(f"    Threshold: {dual_threshold:.4f} (Q1={q1:.4f}, Q3={q3:.4f}, IQR={iqr:.4f})")
+            print(f"    Dual range: [{min_dual:.4f}, {max_dual:.4f}]")
+            print(f"    Eliminated customers: {sorted(list(self.eliminated_customers)[:10])}{'...' if len(self.eliminated_customers) > 10 else ''}")
+        
+        return self.eliminated_customers
+    
+    def get_timing_stats(self):
+        """
+        Return timing statistics for RMP and PP.
+        
+        :return: Dictionary with 'rmp_time' and 'pp_time' keys
+        """
+        return {'rmp_time': self.rmp_time, 'pp_time': self.pp_time}
     
     def compute_route_reduced_cost(self, route, pi):
         """
@@ -209,8 +281,12 @@ class ColumnGeneration:
         # Column generation main loop
         iteration = 0
         while True:
-            # Solve current model
+            # Solve current model (RMP)
+            rmp_start = time.time()
             model.optimize()
+            rmp_end = time.time()
+            self.rmp_time += (rmp_end - rmp_start)
+            
             if model.status == GRB.OPTIMAL:
                 print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
             elif model.status == GRB.INFEASIBLE:
@@ -342,6 +418,10 @@ class ColumnGeneration:
                         #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
                         pass
 
+            # Apply node elimination strategy if enabled
+            eliminated_nodes = set()
+            if self.enable_node_elimination:
+                eliminated_nodes = self.eliminate_nodes_by_dual_values(pi)
 
             # Solve SPPRC to get new columns
             # Determine if this is the final pricing (proving optimality)
@@ -351,12 +431,20 @@ class ColumnGeneration:
             new_routes = []
             # Enable early stopping except when we need to prove optimality
             print(f"[ColumnGen] Calling SPPRC: early_stop_pricing={early_stop_pricing}, lambda_pricing={self.lambda_pricing}")
+            
+            # Solve pricing problem (PP)
+            pp_start = time.time()
             sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1, 
                           early_stop=early_stop_pricing,
                           lambda_pricing=self.lambda_pricing,
                           lambda_factor=self.lambda_factor,
                           dual_pi=pi,
-                          max_columns=self.num_columns_to_keep)
+                          max_columns=self.num_columns_to_keep,
+                          eliminated_customers=eliminated_nodes,
+                          min_columns_early_stop=10)  # Generate at least 10 columns when early stopping
+            pp_end = time.time()
+            self.pp_time += (pp_end - pp_start)
+            
             print(f"[Pricing] Generated {len(new_routes)} columns: {[r.cost for r in new_routes]}")
 
             # Check if there are new negative cost paths

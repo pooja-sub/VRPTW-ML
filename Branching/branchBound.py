@@ -7,7 +7,8 @@ import numpy as np
 import copy
 
 class BranchAndBound:
-    def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False, gap_threshold=None):
+    def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False, gap_threshold=None,
+                 enable_node_elimination=False, node_elimination_threshold=1.5):
         self.lowerbound = -1e10
         self.upperbound = 1e10
         self.bb_node_count = 0  # Track number of BB nodes processed
@@ -17,6 +18,12 @@ class BranchAndBound:
         self.enable_column_deletion = enable_column_deletion
         self.deletion_threshold = deletion_threshold
         self.enable_early_stop = enable_early_stop
+        self.enable_node_elimination = enable_node_elimination
+        self.node_elimination_threshold = node_elimination_threshold
+        
+        # Timing statistics
+        self.total_rmp_time = 0.0  # Cumulative RMP time across all nodes
+        self.total_pp_time = 0.0   # Cumulative PP time across all nodes
 
     class TreeBB:
         def __init__(self, father=None, branch_from=-1, branch_to=-1, branch_value=-1,
@@ -91,12 +98,19 @@ class BranchAndBound:
                          enable_column_deletion=self.enable_column_deletion,
                          deletion_threshold=self.deletion_threshold,
                          lambda_pricing=False,
-                         num_columns_to_keep=10000)
+                         num_columns_to_keep=10000,
+                         enable_node_elimination=self.enable_node_elimination,
+                         node_elimination_threshold=self.node_elimination_threshold)
         cg_obj, routes = column_gen.compute_col_gen(routes, self.lowerbound, self.upperbound, 
                                 fix_interval=10, bb_node_count=self.bb_node_count,
                                 early_stop_pricing=self.enable_early_stop,
                                 vehicle_lower_bound=branching.vehicle_lower_bound,
                                 vehicle_upper_bound=branching.vehicle_upper_bound)
+        
+        # Accumulate timing statistics
+        timing_stats = column_gen.get_timing_stats()
+        self.total_rmp_time += timing_stats['rmp_time']
+        self.total_pp_time += timing_stats['pp_time']
 
         # Check feasibility
         if cg_obj > 2 * user_param.maxlength or cg_obj < -1e-6:
