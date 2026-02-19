@@ -111,10 +111,10 @@ pip install -r requirements.txt
 This implementation builds upon classical column generation and recent
 machine learning–assisted pricing techniques, including:
 
-1. Morabit, M., Desaulniers, G., & Lodi, A.  
+1. **Morabit, M., Desaulniers, G., & Lodi, A. (2021)**.
    *Machine-Learning-Based Column Selection for Column Generation.*  
-   Transportation Science, 2021.
+   Transportation Science, 2021
 
-2. Morabit, M., Desaulniers, G., & Lodi, A.  
-   *Learning to Prune in Column Generation.*  
-   Proceedings of the AAAI Conference on Artificial Intelligence, 2021.
+2. **Morabit, M., Desaulniers, G., & Lodi, A. (2023)**.  
+  *Machine-Learning-Based Arc Selection for Constrained Shortest Path Problems in Column Generation.*  
+  *INFORMS Journal on Optimization*, 5(2), 191–210. :contentReference[oaicite:0]{index=0}
