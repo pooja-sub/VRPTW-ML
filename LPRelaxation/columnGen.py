@@ -1,29 +1,102 @@
 import gurobipy as gp
 from gurobipy import GRB
+import os
+import sys
+
+# Ensure repo root is importable when running from LPRelaxation/.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from Branching.ESPPRC import ESPPRC
 from paramsVRP import ParamsVRP
 from route import Route
-from SPPRC import SPPRC
 import numpy as np
-import os
-import csv
+import time
 
 class ColumnGeneration:
     def __init__(self, user_param):
         self.paramsVRP = user_param
         self.routes = []
-        self._feature_file = None
+        
+        # Timing statistics
+        self.rmp_time = 0.0  # Cumulative time spent on RMP (Restricted Master Problem)
+        self.pp_time = 0.0   # Cumulative time spent on PP (Pricing Problem)
+
+    
+    def compute_route_reduced_cost(self, route, pi):
+        """
+        Compute the reduced cost of a route.
+        
+        Reduced cost = route_cost - sum(pi[customer] for customers in route)
+        
+        :param route: Route object
+        :param pi: Dual values (shadow prices)
+        :return: Reduced cost of the route
+        """
+        reduced_cost = route.cost
+        for customer in route.path[1:-1]:  # Exclude depots
+            if 1 <= customer < self.paramsVRP.nbclients:
+                reduced_cost -= pi[customer - 1]
+        return reduced_cost
+
+    def collect_arc_labels(self):
+        """
+        Collect all arcs used in the final RMP solution.
+        
+        Returns a set of (from, to) tuples representing used arcs.
+        Includes all arcs in routes with positive flow (Q > 0).
+        
+        :return: Set of (from, to) arc tuples used in solution
+        """
+        used_arcs = set()
+        
+        # Extract arcs from all routes in solution
+        for i, route in enumerate(self.routes):
+            if route.Q > 1e-6:  # Route is in solution (Q > 0)
+                # Route path is [start_depot, customer1, customer2, ..., end_depot]
+                path = route.path
+                for j in range(len(path) - 1):
+                    arc = (path[j], path[j + 1])
+                    used_arcs.add(arc)
+        
+        return used_arcs
+    
+    def collect_all_generated_arc_labels(self):
+        """
+        Collect all arcs that appear in ANY generated route (regardless of Q value).
+        
+        This labels arcs based on whether they were generated during column generation,
+        not based on whether they're in the final solution. Good for ML training data.
+        
+        :return: Set of (from, to) arc tuples from all generated routes
+        """
+        all_arcs = set()
+        
+        # Extract arcs from ALL routes (not just those with Q > 0)
+        for route in self.routes:
+            path = route.path
+            for j in range(len(path) - 1):
+                arc = (path[j], path[j + 1])
+                all_arcs.add(arc)
+        
+        return all_arcs
 
     def compute_col_gen(self, initial_routes):
         """
-        Execute column generation algorithm.
-
-        :param initial_routes: Initial list of routes
-        :return: Optimal objective value
+        Execute the column generation algorithm until optimality (no negative reduced cost routes).
+        
+        This is a pure LP relaxation - solves the master problem to optimality through iterative
+        column generation without any branch-and-bound logic.
+        
+        :param initial_routes: Initial route list
+        :return: Optimal objective value and final routes
         """
-        #try:
+        # Start timing for column generation
+        col_gen_start_time = time.time()
+        
         # Initialize Gurobi model
-        model = gp.Model("Column Generation")
-
+        model = gp.Model("LP Relaxation - Column Generation")
         model.setParam("OutputFlag", 0)
         model.setParam("LogToConsole", 0)
 
@@ -37,74 +110,71 @@ class ColumnGeneration:
         y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
 
         # Add constraints: each customer must be served exactly once
+        # Note: nbclients includes depot in the line count, so actual customers are 1 to nbclients-1
         constraints = model.addConstrs(
             (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-             for client in range(1, self.paramsVRP.nbclients - 1)),
+             for client in range(1, self.paramsVRP.nbclients)),
             "ClientService"
         )
 
         model.update()
-        #print(constraints)
 
         # Set objective function
         model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
 
         # Column generation main loop
         iteration = 0
+        
         while True:
-            # Solve the current model
+            # Solve current RMP (Restricted Master Problem)
+            rmp_start = time.time()
             model.optimize()
+            rmp_end = time.time()
+            self.rmp_time += (rmp_end - rmp_start)
+            elapsed_total = time.time() - col_gen_start_time
+            
             if model.status == GRB.OPTIMAL:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
+                print(f"[LP-Relaxation Iteration {iteration}] RMP Optimal: Objective = {model.objVal:.4f} | Elapsed: {elapsed_total:.2f}s")
             elif model.status == GRB.INFEASIBLE:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible.")
+                elapsed_total = time.time() - col_gen_start_time
+                print(f"[LP-Relaxation Iteration {iteration}] RMP is INFEASIBLE - cannot serve all customers | Elapsed: {elapsed_total:.2f}s")
+                return self.paramsVRP.verybig, self.routes
             elif model.status == GRB.UNBOUNDED:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded.")
+                elapsed_total = time.time() - col_gen_start_time
+                print(f"[LP-Relaxation Iteration {iteration}] RMP is UNBOUNDED | Elapsed: {elapsed_total:.2f}s")
+                return -self.paramsVRP.verybig, self.routes
             else:
-                print(
-                    f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status}")
+                elapsed_total = time.time() - col_gen_start_time
+                print(f"[LP-Relaxation Iteration {iteration}] RMP not solved properly. Status = {model.status} | Elapsed: {elapsed_total:.2f}s")
+                return self.paramsVRP.verybig, self.routes
 
-            objectiveFunc = model.getObjective()
-            '''
-            print(f"Model Objective Function: {objectiveFunc}")
-            constraints_ = model.getConstrs()
-            for i, constr in enumerate(constraints_):
-                print(f"Constraint {i}: {constr.ConstrName} with Linear Expression: {model.getRow(constr)} {constr.Sense} {constr.RHS}")
-            '''
-            #print(f"y = {y}")
-
-            # Get dual prices
+            # Get dual prices (shadow prices on customer service constraints)
             pi = [constr.Pi for constr in constraints.values()]
-            #print(f"Iteration {iteration}: Objective = {model.objVal}, Pi = {pi}")
 
-            # Update SPPRC cost matrix
-            for i in range(1, self.paramsVRP.nbclients - 1):
-                for j in range(self.paramsVRP.nbclients):
-                    self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
-                    if self.paramsVRP.cost[i][j] < 0:
-                        #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
-                        pass
+            # Update reduced cost matrix for pricing problem
+            # Reduced cost for arc (i,j) = distance[i][j] - dual[j] (if j is customer)
+            # Reset cost matrix to base distances first
+            self.paramsVRP.cost[:, :] = self.paramsVRP.dist[:, :]
+            for j in range(1, self.paramsVRP.nbclients):  # customers only
+                self.paramsVRP.cost[:, j] = self.paramsVRP.dist[:, j] - pi[j - 1]
 
-
-            # Solve SPPRC to get new columns
-            sp = SPPRC(self.paramsVRP)
+            # Solve pricing problem (SPPRC)
+            sp = ESPPRC(self.paramsVRP)
             new_routes = []
-            sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 2)
-            print(new_routes)
-
-            # Check if there are new negative cost paths
-            if not new_routes:
-                print("[-]No new negative cost paths found.")
-                # Check model status
-                if model.status == GRB.OPTIMAL:
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
-                elif model.status == GRB.INFEASIBLE:
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible.")
-                elif model.status == GRB.UNBOUNDED:
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded.")
-                else:
-                    print(
-                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status}")
+            
+            pp_start = time.time()
+            sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1)
+            pp_end = time.time()
+            self.pp_time += (pp_end - pp_start)
+            elapsed_total = time.time() - col_gen_start_time
+            
+            if new_routes:
+                min_cost = min([r.cost for r in new_routes])
+                pp_time = pp_end - pp_start
+                print(f"[LP-Relaxation Iteration {iteration}] Pricing: Generated {len(new_routes)} columns, min cost = {min_cost:.4f} | PP time: {pp_time:.2f}s | Total elapsed: {elapsed_total:.2f}s")
+            else:
+                elapsed_total = time.time() - col_gen_start_time
+                print(f"[LP-Relaxation Iteration {iteration}] Pricing: No negative reduced cost routes found - OPTIMALITY ACHIEVED | Total elapsed: {elapsed_total:.2f}s")
                 break
 
             # Add new routes to the model
@@ -112,139 +182,44 @@ class ColumnGeneration:
                 cost = sum(self.paramsVRP.dist[new_route.path[i]][new_route.path[i + 1]] for i in range(len(new_route.path) - 1))
                 new_route.set_cost(cost)
                 self.routes.append(new_route)
-                # Mark arcs present in this new route in the dataset feature CSV (if available)
-                try:
-                    # find feature file lazily
-                    if self._feature_file is None:
-                        self._feature_file = self._find_feature_file()
-                    if self._feature_file:
-                        arcs = []
-                        prevcity = None
-                        for city in new_route.path:
-                            if prevcity is not None:
-                                arcs.append((prevcity, city))
-                            prevcity = city
-                        # filter arcs that involve depot (0) or the end-depot (nbclients-1)
-                        nb_last = self.paramsVRP.nbclients - 1
-                        arcs_to_mark = set()
-                        for a, b in arcs:
-                            if a == 0 or b == 0 or a == nb_last or b == nb_last:
-                                continue
-                            arcs_to_mark.add((int(a), int(b)))
-                        if arcs_to_mark:
-                            self._mark_arcs_in_feature(self._feature_file, arcs_to_mark)
-                except Exception as e:
-                    print(f"Warning: failed to update feature file: {e}")
 
-                # Get all variables in the model
-                vars_to_remove = model.getVars()
-                for var in vars_to_remove:
-                    model.remove(var)
-                constrs_to_remove = model.getConstrs()
-                for constr in constrs_to_remove:
-                    model.remove(constr)
+            # Rebuild model with all routes (including new ones)
+            vars_to_remove = model.getVars()
+            for var in vars_to_remove:
+                model.remove(var)
+            constrs_to_remove = model.getConstrs()
+            for constr in constrs_to_remove:
+                model.remove(constr)
 
+            # Recreate variables and constraints
+            y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
+            constraints = model.addConstrs(
+                (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
+                 for client in range(1, self.paramsVRP.nbclients)),
+                "ClientService"
+            )
 
-                # Create variables and objective function
-                y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
-
-                # Add constraints: each customer must be served exactly once
-                constraints = model.addConstrs(
-                    (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-                     for client in range(1, self.paramsVRP.nbclients - 1)),
-                    "ClientService"
-                )
-
-                model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
-
-                model.update()
+            model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
+            model.update()
 
             iteration += 1
-            '''
-            # Check model status
-            if model.status == GRB.OPTIMAL:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal}")
-            elif model.status == GRB.INFEASIBLE:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible.")
-            elif model.status == GRB.UNBOUNDED:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded.")
-            else:
-                print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status}")
-            '''
 
-        # Output final results
+        # Set final variable values and output solution
+        print(f"\n[LP-Relaxation] Solution:")
+        print(f"{'Route':<6} {'Cost':<10} {'Flow':<10} {'Path':<30}")
+        print("-" * 60)
+        
         for i, route in enumerate(self.routes):
             route.set_Q(y[i].x)
-            if route.Q > 0:
-                print(f"Route {i}: Cost = {route.cost}, Q = {route.Q}, Path = {route.path}")
+            if route.Q > 1e-6:
+                path_str = " -> ".join(map(str, route.path))
+                print(f"{i:<6} {route.cost:<10.4f} {route.Q:<10.6f} {path_str:<30}")
 
-        return model.objVal, self.routes
+        optimal_value = model.objVal
+        elapsed_total = time.time() - col_gen_start_time
+        print(f"\n[LP-Relaxation] Final Objective Value: {optimal_value:.4f}")
+        print(f"[LP-Relaxation] Total Iterations: {iteration}")
+        print(f"[LP-Relaxation] RMP Time: {self.rmp_time:.2f}s | PP Time: {self.pp_time:.2f}s | Total Elapsed: {elapsed_total:.2f}s")
+        
+        return optimal_value, self.routes
 
-    def _find_feature_file(self):
-        """Try to locate an arc-features CSV for the current dataset inside DatasetFeatures/.
-        Returns full path or None if not found.
-        """
-        try:
-            root = os.path.dirname(os.path.dirname(__file__))
-            df_dir = os.path.join(root, 'DatasetFeatures','50-customer-instances')
-            if not os.path.isdir(df_dir):
-                return None
-            name = (self.paramsVRP.datasetName or '').lower()
-            for fname in os.listdir(df_dir):
-                lf = fname.lower()
-                if 'arc' in lf and 'feature' in lf and lf.endswith('.csv') and name in lf:
-                    return os.path.join(df_dir, fname)
-                # fallback: match dataset name and 'arc' in filename
-                if 'arc' in lf and name in lf and lf.endswith('.csv'):
-                    return os.path.join(df_dir, fname)
-            return None
-        except Exception:
-            return None
-
-    def _mark_arcs_in_feature(self, feature_file, arcs_to_mark):
-        """Mark arcs in the CSV by setting/creating a 'label' column to '1' for arcs in arcs_to_mark.
-
-        arcs_to_mark: set of (from,to) tuples (integers)
-        """
-        try:
-            tmp_file = feature_file + '.tmp'
-            with open(feature_file, 'r', newline='', encoding='utf-8') as rf:
-                reader = csv.DictReader(rf)
-                fieldnames = reader.fieldnames[:] if reader.fieldnames else []
-                if 'label' not in fieldnames:
-                    fieldnames = fieldnames + ['label']
-
-                rows = []
-                for row in reader:
-                    try:
-                        f = int(row.get('from', row.get('From', '')).strip()) if row.get('from', None) else None
-                        t = int(row.get('to', row.get('To', '')).strip()) if row.get('to', None) else None
-                    except Exception:
-                        f = None
-                        t = None
-                    if f is not None and t is not None and (f, t) in arcs_to_mark:
-                        row['label'] = '1'
-                    else:
-                        # ensure label exists (keep existing or set 0)
-                        if 'label' not in row or row.get('label', '') == '':
-                            row['label'] = row.get('label', '0')
-                    rows.append(row)
-
-            # write back
-            with open(tmp_file, 'w', newline='', encoding='utf-8') as wf:
-                writer = csv.DictWriter(wf, fieldnames=fieldnames)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow(row)
-
-            # replace original
-            os.replace(tmp_file, feature_file)
-        except Exception as e:
-            print(f"Error updating feature file {feature_file}: {e}")
-
-        '''
-        except gp.GurobiError as e:
-            print(f"Gurobi Error: {e}")
-        except Exception as e:
-            print(f"Error in compute_col_gen: {e}")
-        '''

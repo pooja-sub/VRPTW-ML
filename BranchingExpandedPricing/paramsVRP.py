@@ -15,6 +15,7 @@ class ParamsVRP:
         :param service_in_tw: Whether to consider service time within time window
         """
         self.datasetName = ""
+        self.instance_path = ""
         self.verbose = False
         self.rndseed = 0
         self.nbclients = nbclients  # Number of customers
@@ -42,6 +43,7 @@ class ParamsVRP:
 
     def init_params(self, input_path):
         try:
+            self.instance_path = input_path
             with open(input_path, 'r') as file:
                 lines = file.readlines()
 

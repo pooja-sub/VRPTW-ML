@@ -29,7 +29,8 @@ def generate_arc_features(df):
     in_arcs = defaultdict(list)
     
     for i, j in product(range(n), repeat=2):
-        if i == j or i==0 or j==0:
+        # Keep depot<->customer arcs; only exclude self-loops.
+        if i == j:
             continue
 
         # Cost
@@ -95,7 +96,15 @@ def generate_arc_features(df):
 
 # -------------------- Step 3: Export to DataFrame for ML -------------------- #
 
-def features_to_dataframe(arc_features):
+def features_to_dataframe(arc_features, used_arcs=None):
+    """
+    Convert arc features to DataFrame and optionally label with arc usage.
+    
+    :param arc_features: Dictionary of arc features from generate_arc_features()
+    :param used_arcs: Optional set of (from, to) tuples representing arcs in RMP solution.
+                      If provided, adds 'label' column (1 if arc used, 0 otherwise).
+    :return: pandas DataFrame with arc features and optional label
+    """
     rows = []
     for (i, j), feat in arc_features.items():
         row = {
@@ -122,8 +131,21 @@ def features_to_dataframe(arc_features):
             'ready_j': feat['time_bounds_j'][0],
             'due_j': feat['time_bounds_j'][1]
         }
+        
+        # Add label if used_arcs provided (for ML training data).
+        # Label all non-self arcs, including depot<->customer arcs.
+        if used_arcs is not None and i != j:
+            row['label'] = 1 if (i, j) in used_arcs else 0
+        
         rows.append(row)
-    return pd.DataFrame(rows)
+    
+    df = pd.DataFrame(rows)
+    
+    # If labels were added, keep only rows where label is defined.
+    if used_arcs is not None and 'label' in df.columns:
+        df = df[df['label'].notna()].reset_index(drop=True)
+    
+    return df
 
 
 # -------------------- Example usage -------------------- #

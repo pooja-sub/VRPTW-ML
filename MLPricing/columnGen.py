@@ -39,13 +39,16 @@ class ColumnGeneration:
             route.set_cost(cost)
             self.routes.append(route)
 
+        # Track path signatures to avoid adding identical columns forever.
+        known_route_paths = {tuple(route.path) for route in self.routes}
+
         # Create variables and objective function
         y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
 
         # Add constraints: each customer must be served once
         constraints = model.addConstrs(
             (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-             for client in range(1, self.paramsVRP.nbclients - 1)),
+             for client in range(1, self.paramsVRP.nbclients)),
             "ClientService"
         )
 
@@ -89,8 +92,8 @@ class ColumnGeneration:
             #print(f"Iteration {iteration}: Objective = {model.objVal}, Pi = {pi}")
 
             # Update SPPRC cost matrix
-            for i in range(1, self.paramsVRP.nbclients - 1):
-                for j in range(self.paramsVRP.nbclients):
+            for i in range(1, self.paramsVRP.nbclients):
+                for j in range(self.paramsVRP.nbclients + 2):
                     self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
                     if self.paramsVRP.cost[i][j] < 0:
                         #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
@@ -110,8 +113,8 @@ class ColumnGeneration:
                     except Exception as e:
                         print(f"Failed to build reduced graph: {e}")
                         self._A_r = set()
-                    # initialize use flag
-                    self._useReducedG = True if self._A_r else False
+                    # initialize use flag - DISABLED for testing (always use full graph)
+                    self._useReducedG = False
 
                 try:
                     pp_start = time.time()
@@ -122,12 +125,12 @@ class ColumnGeneration:
                     print(f"ML pricing error: {e}; falling back to SPPRC")
                     pp_start = time.time()
                     new_routes = []
-                    sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 2)
+                    sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1)
                     pp_time = time.time() - pp_start
                     pp_total += pp_time
             else:
                 pp_start = time.time()
-                sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 2)
+                sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1)
                 pp_time = time.time() - pp_start
                 pp_total += pp_time
 
@@ -155,8 +158,21 @@ class ColumnGeneration:
                         f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status}")
                 break
 
+            # Keep only genuinely new columns by path.
+            unique_new_routes = []
+            for cand in new_routes:
+                key = tuple(cand.path)
+                if key in known_route_paths:
+                    continue
+                known_route_paths.add(key)
+                unique_new_routes.append(cand)
+
+            if not unique_new_routes:
+                print("[-]Pricing returned only duplicate routes; stopping column generation.")
+                break
+
             # Add new routes to the model
-            for new_route in new_routes:
+            for new_route in unique_new_routes:
                 cost = sum(self.paramsVRP.dist[new_route.path[i]][new_route.path[i + 1]] for i in range(len(new_route.path) - 1))
                 new_route.set_cost(cost)
                 self.routes.append(new_route)
@@ -175,7 +191,7 @@ class ColumnGeneration:
                 # Add constraint: each customer must be served once
                 constraints = model.addConstrs(
                     (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-                     for client in range(1, self.paramsVRP.nbclients - 1)),
+                     for client in range(1, self.paramsVRP.nbclients)),
                     "ClientService"
                 )
 

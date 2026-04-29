@@ -8,7 +8,7 @@ This module exposes:
 Notes:
 - `predict_fn` should accept a dict of feature values and return 0/1.
 - `sp_solver` should be the SPPRC class (importable); this function will call
-  `sp_solver.shortestPath(params, new_routes, params.nbclients - 2)` after masking disallowed arcs.
+    `sp_solver.shortestPath(params, new_routes, params.nbclients - 1)` after masking disallowed arcs.
 - The CSV is expected in the same format as your file: header includes `from` and `to`.
 
 This file only creates/returns routes. It does not modify the RMP; the caller should
@@ -72,7 +72,7 @@ def build_reduced_graph(params, feature_csv: Optional[str] = None, predict_fn: O
             except Exception:
                 continue
             # skip depot arcs (assume depot index 0 or last index not present in file per user)
-            nb_last = params.nbclients - 1
+            nb_last = params.nbclients
             if f == 0 or t == 0 or f == nb_last or t == nb_last:
                 continue
             # call predict on the feature dict (pass the row as-is)
@@ -85,7 +85,7 @@ def build_reduced_graph(params, feature_csv: Optional[str] = None, predict_fn: O
     # Always include depot->customer and customer->depot arcs so reduced graph
     # preserves feasibility (start/end depot arcs are required by SPPRC).
     try:
-        nb_last = params.nbclients - 1
+        nb_last = params.nbclients
         for k in range(1, nb_last):
             arcs.add((0, k))
             arcs.add((k, nb_last))
@@ -108,7 +108,7 @@ def _mask_graph_by_arcs(params, allowed_arcs: Set[Tuple[int, int]]):
     Returns a deep copy of the original dist matrix so it can be restored later.
     """
     orig = copy.deepcopy(params.dist)
-    nb = params.nbclients
+    nb = params.nbclients + 2
     verybig = params.verybig
     for i in range(nb):
         for j in range(nb):
@@ -135,8 +135,8 @@ def run_ml_pricing_iteration(params, pi, sp_solver, A_r: Set[Tuple[int,int]], us
     Returns: (new_routes_list, useReducedG_after, num_generated)
     """
     # Update reduced cost (same as original code does)
-    for i in range(1, params.nbclients - 1):
-        for j in range(params.nbclients):
+    for i in range(1, params.nbclients):
+        for j in range(params.nbclients + 2):
             params.cost[i][j] = params.dist[i][j] - pi[i - 1]
 
     # decide active arcs
@@ -147,7 +147,7 @@ def run_ml_pricing_iteration(params, pi, sp_solver, A_r: Set[Tuple[int,int]], us
         for (a, b) in A_r:
             allowed_arcs.add((a, b))
         # Always include depot arcs (start depot -> customers) and (customers -> end depot)
-        nb_last = params.nbclients - 1
+        nb_last = params.nbclients
         for k in range(1, nb_last):
             allowed_arcs.add((0, k))
             allowed_arcs.add((k, nb_last))
@@ -158,7 +158,7 @@ def run_ml_pricing_iteration(params, pi, sp_solver, A_r: Set[Tuple[int,int]], us
     # solve SPPRC on the (possibly masked) graph
     new_routes = []
     try:
-        sp_solver.shortestPath(params, new_routes, params.nbclients - 2)
+        sp_solver.shortestPath(params, new_routes, params.nbclients - 1)
     finally:
         if orig_dist is not None:
             _restore_graph(params, orig_dist)

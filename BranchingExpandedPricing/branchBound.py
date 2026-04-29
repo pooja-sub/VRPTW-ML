@@ -1,14 +1,17 @@
 import gurobipy as gp
 from gurobipy import GRB
 from paramsVRP import ParamsVRP
-from route import Route
+# from route import Route
 from columnGen import ColumnGeneration
+from expanded_pricing import ExpandedGraphPricing
 import numpy as np
 import copy
 
 class BranchAndBound:
     def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False, gap_threshold=None,
-                 enable_node_elimination=False, node_elimination_threshold=1.5, min_nonbasic_columns=100, lambda_factor=2.0, time_limit=None):
+                 enable_node_elimination=False, node_elimination_threshold=1.5, min_nonbasic_columns=100,
+                 lambda_factor=2.0, time_limit=None,
+                 use_expanded_pricing=True, expanded_max_m=None, expanded_max_routes=20):
         self.lowerbound = -1e10
         self.upperbound = 1e10
         self.bb_node_count = 0  # Track number of BB nodes processed
@@ -22,12 +25,50 @@ class BranchAndBound:
         self.node_elimination_threshold = node_elimination_threshold
         self.min_nonbasic_columns = min_nonbasic_columns
         self.lambda_factor = lambda_factor
+        self.use_expanded_pricing = use_expanded_pricing
+        self.expanded_max_m = expanded_max_m
+        self.expanded_max_routes = expanded_max_routes
+        self.shared_expanded_pricing = None
+        self.shared_expanded_pricing_key = None
         
         # Timing statistics and limit
         self.total_rmp_time = 0.0  # Cumulative RMP time across all nodes
         self.total_pp_time = 0.0   # Cumulative PP time across all nodes
         self.time_limit = time_limit  # Optional time limit in seconds
         self.start_time = None  # Initialized when bb_node is called
+
+    def _get_shared_expanded_pricing(self, user_param):
+        """
+        Build expanded graphs once and reuse across all BnP nodes.
+
+        Branching only forbids/enforces arcs via user_param.dist. Pricing already checks
+        current dist feasibility at extension time, so a shared expanded graph built from
+        the base preprocessed network can be reused safely across descendants.
+        """
+        if not self.use_expanded_pricing:
+            return None
+
+        cache_key = (
+            getattr(user_param, "instance_path", ""),
+            int(self.expanded_max_m) if self.expanded_max_m is not None else None,
+        )
+
+        if self.shared_expanded_pricing is not None and self.shared_expanded_pricing_key == cache_key:
+            return self.shared_expanded_pricing
+
+        # Build from the base preprocessed arc set (without node-specific branching edits).
+        base_param = copy.deepcopy(user_param)
+        base_param.dist = copy.deepcopy(user_param.dist_base)
+
+        print("[ExpandedPricing] Building shared expanded-graph cache once at BnP level")
+        self.shared_expanded_pricing = ExpandedGraphPricing(
+            user_param=base_param,
+            max_m=self.expanded_max_m,
+            quiet_graph_logs=True,
+            quiet_spprc_logs=True,
+        )
+        self.shared_expanded_pricing_key = cache_key
+        return self.shared_expanded_pricing
 
     class TreeBB:
         def __init__(self, father=None, branch_from=-1, branch_to=-1, branch_value=-1,
@@ -128,10 +169,31 @@ class BranchAndBound:
         # Display local info
         print(f"\nEdge from {branching.branch_from} to {branching.branch_to}: {'forbid' if branching.branch_value == 0 else 'set'}")
 
-        # Compute solution using the local ColumnGeneration implementation.
-        # The MLPricing version currently exposes a simplified API.
-        column_gen = ColumnGeneration(user_param)
-        cg_obj, routes = column_gen.compute_col_gen(routes)
+        # Compute solution using Column Generation (pass bounds for variable fixing)
+        column_gen = ColumnGeneration(user_param, 
+                         enable_column_deletion=self.enable_column_deletion,
+                         deletion_threshold=self.deletion_threshold,
+                         min_nonbasic_columns=self.min_nonbasic_columns,
+                         lambda_pricing=False,
+                         lambda_factor=self.lambda_factor,
+                         num_columns_to_keep=10000,
+                         enable_node_elimination=self.enable_node_elimination,
+                         node_elimination_threshold=self.node_elimination_threshold,
+                         use_expanded_pricing=self.use_expanded_pricing,
+                         expanded_max_m=self.expanded_max_m,
+                         expanded_max_routes=self.expanded_max_routes,
+                         shared_expanded_pricing=self._get_shared_expanded_pricing(user_param))
+        cg_obj, routes = column_gen.compute_col_gen(routes, self.lowerbound, self.upperbound, 
+                                fix_interval=10, bb_node_count=self.bb_node_count,
+                                early_stop_pricing=self.enable_early_stop,
+                                # vehicle_lower_bound=branching.vehicle_lower_bound,
+                                # vehicle_upper_bound=branching.vehicle_upper_bound
+                                )
+        
+        # Accumulate timing statistics
+        timing_stats = column_gen.get_timing_stats()
+        self.total_rmp_time += timing_stats['rmp_time']
+        self.total_pp_time += timing_stats['pp_time']
 
         # # Check feasibility
         # if cg_obj > 2 * user_param.maxlength or cg_obj < -1e-6:

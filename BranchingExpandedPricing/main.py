@@ -2,6 +2,7 @@ from branchBound import BranchAndBound
 from paramsVRP import ParamsVRP
 from route import Route
 import time
+from solVisualization import solVis
 from logcapture import start_logging
 import heapq
 
@@ -398,7 +399,10 @@ def main(datasetPath,
          enable_early_stop_pricing = False, # Enable early stopping in SPPRC (disabled by default)
          gap_threshold = None,              # Optional optimality gap to stop early
          heuristic = 'savings',             # Initial heuristic: 'savings' or 'solomon'
-         time_limit = None):                # Time limit in seconds (None for no limit)
+         time_limit = None,                 # Time limit in seconds (None for no limit)
+         use_expanded_pricing = True,      # Optional expanded-graph pricing backend
+         expanded_max_m = 10,             # Optional max m for expanded-graph precomputation
+         expanded_max_routes = 20):         # Max columns returned per expanded-pricing call
     """
     Main function to solve VRPTW using Branch-and-Price with acceleration techniques.
     
@@ -420,7 +424,10 @@ def main(datasetPath,
                        deletion_threshold=deletion_threshold,
                        enable_early_stop=enable_early_stop_pricing,
                        gap_threshold=gap_threshold,
-                       time_limit=time_limit)
+                       time_limit=time_limit,
+                       use_expanded_pricing=use_expanded_pricing,
+                       expanded_max_m=expanded_max_m,
+                       expanded_max_routes=expanded_max_routes)
 
     # Initialize problem instance
     user_param = ParamsVRP()
@@ -503,7 +510,7 @@ if __name__ == "__main__":
 
     # Single dataset processing
     # Choose heuristic: 'savings' (Clarke-Wright) or 'solomon' (Solomon's I1 insertion)
-    main(datasetPath="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_50_customer_instances\\r201.txt", 
+    main(datasetPath="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_50_customer_instances\\r102.txt", 
          SHOWFIG=True,
          heuristic='savings',
          time_limit=1000)  # Set to 300 seconds (5 minutes). Change to 'solomon' to test Solomon's insertion heuristic. Set time_limit=None for no limit.

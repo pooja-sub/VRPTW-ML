@@ -1,15 +1,18 @@
 import gurobipy as gp
 from gurobipy import GRB
 from paramsVRP import ParamsVRP
-from route import Route
+# from route import Route
 from ESPPRC import ESPPRC
+from expanded_pricing import ExpandedGraphPricing
 import numpy as np
 import time
 
 class ColumnGeneration:
     def __init__(self, user_param, enable_column_deletion, deletion_threshold, min_nonbasic_columns,
                  lambda_pricing, lambda_factor, num_columns_to_keep,
-                 enable_node_elimination, node_elimination_threshold):
+                 enable_node_elimination, node_elimination_threshold,
+                 use_expanded_pricing=True, expanded_max_m=None, expanded_max_routes=20,
+                 shared_expanded_pricing=None):
         self.paramsVRP = user_param
         self.routes = []
         self.fixed_routes = set()  # Track indices of permanently eliminated routes
@@ -30,10 +33,28 @@ class ColumnGeneration:
         self.enable_node_elimination = enable_node_elimination  # Enable/disable node elimination strategy
         self.node_elimination_threshold = node_elimination_threshold  # Multiplier for identifying high negative duals
         self.eliminated_customers = set()  # Track eliminated customers per pricing iteration
+
+        # Optional expanded-graph pricing backend
+        self.use_expanded_pricing = use_expanded_pricing
+        self.expanded_max_m = expanded_max_m
+        self.expanded_max_routes = expanded_max_routes
+        # Optional shared backend built once at BranchAndBound level and reused across BnP nodes.
+        self.expanded_pricing = shared_expanded_pricing
         
         # Timing statistics
         self.rmp_time = 0.0  # Cumulative time spent on RMP (Restricted Master Problem)
         self.pp_time = 0.0   # Cumulative time spent on PP (Pricing Problem)
+
+    def _ensure_expanded_pricing(self):
+        """Build expanded-graph cache once per ColumnGeneration object (i.e., per BnP node)."""
+        if self.expanded_pricing is not None:
+            return
+        self.expanded_pricing = ExpandedGraphPricing(
+            user_param=self.paramsVRP,
+            max_m=self.expanded_max_m,
+            quiet_graph_logs=True,
+            quiet_spprc_logs=True,
+        )
 
     def _route_key(self, route):
         """Hashable route identity based on full path."""
@@ -318,6 +339,10 @@ class ColumnGeneration:
         # Column generation main loop
         iteration = 0
         col_gen_start_time = time.time()
+
+        if self.use_expanded_pricing:
+            self._ensure_expanded_pricing()
+
         while True:
             elapsed_total = time.time() - col_gen_start_time
             # Solve current model (RMP)
@@ -466,25 +491,32 @@ class ColumnGeneration:
             if self.enable_node_elimination:
                 eliminated_nodes = self.eliminate_nodes_by_dual_values(pi)
 
-            # Solve SPPRC to get new columns
-            # Determine if this is the final pricing (proving optimality)
-            # is_final_pricing = (iteration > 0)  # After first iteration, we're refining
-            
-            sp = ESPPRC(self.paramsVRP)
             new_routes = []
-            # Enable early stopping except when we need to prove optimality
-            print(f"[ColumnGen] Calling SPPRC: early_stop_pricing={early_stop_pricing}, lambda_pricing={self.lambda_pricing}")
-            
+
             # Solve pricing problem (PP)
             pp_start = time.time()
-            sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1, 
-                          early_stop=early_stop_pricing,
-                          lambda_pricing=self.lambda_pricing,
-                          lambda_factor=self.lambda_factor,
-                          dual_pi=pi,
-                          max_columns=self.num_columns_to_keep,
-                          eliminated_customers=eliminated_nodes,
-                          min_columns_early_stop=10)  # Generate at least 10 columns when early stopping
+            if self.use_expanded_pricing:
+                print("[ColumnGen] Calling expanded-graph pricing backend")
+                max_routes = max(1, min(self.expanded_max_routes, self.num_columns_to_keep))
+                new_routes = self.expanded_pricing.price(
+                    user_param=self.paramsVRP,
+                    dual_pi=pi,
+                    max_routes=max_routes,
+                )
+            else:
+                # Determine if this is the final pricing (proving optimality)
+                # is_final_pricing = (iteration > 0)  # After first iteration, we're refining
+                sp = ESPPRC(self.paramsVRP)
+                # Enable early stopping except when we need to prove optimality
+                print(f"[ColumnGen] Calling SPPRC: early_stop_pricing={early_stop_pricing}, lambda_pricing={self.lambda_pricing}")
+                sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1,
+                              early_stop=early_stop_pricing,
+                              lambda_pricing=self.lambda_pricing,
+                              lambda_factor=self.lambda_factor,
+                              dual_pi=pi,
+                              max_columns=self.num_columns_to_keep,
+                              eliminated_customers=eliminated_nodes,
+                              min_columns_early_stop=10)  # Generate at least 10 columns when early stopping
             pp_end = time.time()
             self.pp_time += (pp_end - pp_start)
             

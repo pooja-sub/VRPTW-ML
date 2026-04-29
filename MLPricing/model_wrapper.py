@@ -5,8 +5,12 @@
 # a simple heuristic.
 
 import os
-import joblib
 import numpy as np
+import pickle
+try:
+    import joblib
+except Exception:
+    joblib = None
 
 _model = None
 _scaler = None
@@ -59,19 +63,21 @@ def _load_model_and_scaler():
 
     scaler_path = env_scaler or (same_scaler if os.path.exists(same_scaler) else mlmodels_scaler or same_scaler)
 
+    def _load_obj(path):
+        if not os.path.exists(path):
+            return None
+        if joblib is not None:
+            return joblib.load(path)
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+
     try:
-        if os.path.exists(model_path):
-            _model = joblib.load(model_path)
-        else:
-            _model = None
+        _model = _load_obj(model_path)
     except Exception:
         _model = None
 
     try:
-        if os.path.exists(scaler_path):
-            _scaler = joblib.load(scaler_path)
-        else:
-            _scaler = None
+        _scaler = _load_obj(scaler_path)
     except Exception:
         _scaler = None
 
