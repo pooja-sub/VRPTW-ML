@@ -1,18 +1,21 @@
 import sys
 import os
-
-# Add parent directory to path to import Common modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import gurobipy as gp
 from gurobipy import GRB
+from Common.paramsVRP import ParamsVRP
 from Common.ESPPRC import ESPPRC
+from expanded_pricing import ExpandedGraphPricing
+import numpy as np
 import time
 
 class ColumnGeneration:
     def __init__(self, user_param, enable_column_deletion, deletion_threshold, min_nonbasic_columns,
                  lambda_pricing, lambda_factor, num_columns_to_keep,
-                 enable_node_elimination, node_elimination_threshold):
+                 enable_node_elimination, node_elimination_threshold,
+                 use_expanded_pricing=True, expanded_max_m=None, expanded_max_routes=20,
+                 shared_expanded_pricing=None):
         self.paramsVRP = user_param
         self.routes = []
         self.fixed_routes = set()  # Track indices of permanently eliminated routes
@@ -33,10 +36,28 @@ class ColumnGeneration:
         self.enable_node_elimination = enable_node_elimination  # Enable/disable node elimination strategy
         self.node_elimination_threshold = node_elimination_threshold  # Multiplier for identifying high negative duals
         self.eliminated_customers = set()  # Track eliminated customers per pricing iteration
+
+        # Optional expanded-graph pricing backend
+        self.use_expanded_pricing = use_expanded_pricing
+        self.expanded_max_m = expanded_max_m
+        self.expanded_max_routes = expanded_max_routes
+        # Optional shared backend built once at BranchAndBound level and reused across BnP nodes.
+        self.expanded_pricing = shared_expanded_pricing
         
         # Timing statistics
         self.rmp_time = 0.0  # Cumulative time spent on RMP (Restricted Master Problem)
         self.pp_time = 0.0   # Cumulative time spent on PP (Pricing Problem)
+
+    def _ensure_expanded_pricing(self):
+        """Build expanded-graph cache once per ColumnGeneration object (i.e., per BnP node)."""
+        if self.expanded_pricing is not None:
+            return
+        self.expanded_pricing = ExpandedGraphPricing(
+            user_param=self.paramsVRP,
+            max_m=self.expanded_max_m,
+            quiet_graph_logs=True,
+            quiet_spprc_logs=True,
+        )
 
     def _route_key(self, route):
         """Hashable route identity based on full path."""
@@ -310,6 +331,10 @@ class ColumnGeneration:
         # Column generation main loop
         iteration = 0
         col_gen_start_time = time.time()
+
+        if self.use_expanded_pricing:
+            self._ensure_expanded_pricing()
+
         while True:
             elapsed_total = time.time() - col_gen_start_time
             # Solve current model (RMP)
@@ -343,6 +368,7 @@ class ColumnGeneration:
                 print(
                     f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status} | Elapsed: {elapsed_total:.2f}s")
                 return float('inf'), []
+            #print(f"Iteration {iteration}: Objective = {model.objVal}, Pi = {pi}")
             
             # Apply column deletion if enabled
             if self.enable_column_deletion and iteration > 0 and iteration % fix_interval == 0:
@@ -398,34 +424,52 @@ class ColumnGeneration:
             for i in range(1, self.paramsVRP.nbclients):
                 for j in range(self.paramsVRP.nbclients + 1):
                     self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
-                    
+                    # if self.paramsVRP.cost[i][j] < 0:
+                    #     #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
+                    #     pass
 
             # Apply node elimination strategy if enabled
             eliminated_nodes = set()
             if self.enable_node_elimination:
                 eliminated_nodes = self.eliminate_nodes_by_dual_values(pi)
 
-            
-            sp = ESPPRC(self.paramsVRP)
             new_routes = []
-            # Enable early stopping except when we need to prove optimality
-            print(f"[ColumnGen] Calling SPPRC: early_stop_pricing={early_stop_pricing}, lambda_pricing={self.lambda_pricing}")
-            
+            graph_expand_time = 0.0
+
             # Solve pricing problem (PP)
             pp_start = time.time()
-            sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1, 
-                          early_stop=early_stop_pricing,
-                          lambda_pricing=self.lambda_pricing,
-                          lambda_factor=self.lambda_factor,
-                          dual_pi=pi,
-                          max_columns=self.num_columns_to_keep,
-                          eliminated_customers=eliminated_nodes,
-                          min_columns_early_stop=10)  # Generate at least 10 columns when early stopping
+            if self.use_expanded_pricing:
+                print("[ColumnGen] Calling expanded-graph pricing backend")
+                max_routes = max(1, min(self.expanded_max_routes, self.num_columns_to_keep))
+                new_routes = self.expanded_pricing.price(
+                    user_param=self.paramsVRP,
+                    dual_pi=pi,
+                    max_routes=max_routes,
+                )
+                graph_expand_time = getattr(self.expanded_pricing, "last_graph_expand_time", 0.0)
+            else:
+                # Determine if this is the final pricing (proving optimality)
+                # is_final_pricing = (iteration > 0)  # After first iteration, we're refining
+                sp = ESPPRC(self.paramsVRP)
+                # Enable early stopping except when we need to prove optimality
+                print(f"[ColumnGen] Calling SPPRC: early_stop_pricing={early_stop_pricing}, lambda_pricing={self.lambda_pricing}")
+                sp.shortestPath(self.paramsVRP, new_routes, self.paramsVRP.nbclients - 1,
+                              early_stop=early_stop_pricing,
+                              lambda_pricing=self.lambda_pricing,
+                              lambda_factor=self.lambda_factor,
+                              dual_pi=pi,
+                              max_columns=self.num_columns_to_keep,
+                              eliminated_customers=eliminated_nodes,
+                              min_columns_early_stop=10)  # Generate at least 10 columns when early stopping
             pp_end = time.time()
             self.pp_time += (pp_end - pp_start)
             
             elapsed_total = time.time() - col_gen_start_time
-            print(f"[Pricing] Generated {len(new_routes)} columns: {[r.cost for r in new_routes]} | PP time: {(pp_end - pp_start):.2f}s | Total elapsed: {elapsed_total:.2f}s")
+            print(
+                f"[Pricing] Generated {len(new_routes)} columns: {[r.cost for r in new_routes]} | "
+                f"PP time: {(pp_end - pp_start):.2f}s | Graph expansion: {graph_expand_time:.2f}s | "
+                f"Total elapsed: {elapsed_total:.2f}s"
+            )
 
             # Check if there are new negative cost paths
             if not new_routes:
@@ -433,17 +477,28 @@ class ColumnGeneration:
                 # Check model status
                 if model.status == GRB.OPTIMAL:
                     elapsed_total = time.time() - col_gen_start_time
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal} | Total elapsed: {elapsed_total:.2f}s")
+                    print(
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal} | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 elif model.status == GRB.INFEASIBLE:
                     elapsed_total = time.time() - col_gen_start_time
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible. | Total elapsed: {elapsed_total:.2f}s")
+                    print(
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible. | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 elif model.status == GRB.UNBOUNDED:
                     elapsed_total = time.time() - col_gen_start_time
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded. | Total elapsed: {elapsed_total:.2f}s")
+                    print(
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded. | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 else:
                     elapsed_total = time.time() - col_gen_start_time
                     print(
-                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status} | Total elapsed: {elapsed_total:.2f}s")
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status} | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 break
 
             # Add new routes to the pool, skipping duplicate paths.

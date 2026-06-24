@@ -19,6 +19,12 @@ import os
 import csv
 import copy
 
+try:
+    from gnn_pruning import GuidedArcPruner, PruningConfig
+except Exception:
+    GuidedArcPruner = None
+    PruningConfig = None
+
 # default predict function placeholder - user can pass their own
 try:
     # try to import user-supplied wrapper (created earlier)
@@ -28,7 +34,128 @@ except Exception:
         return 0
 
 
-def build_reduced_graph(params, feature_csv: Optional[str] = None, predict_fn: Optional[Callable] = None):
+_GUIDED_PRUNING_CONFIG = {
+    "enabled": False,
+    "model_path": None,
+    "threshold": 0.55,
+    "keep_ratio": 0.35,
+    "top_k_per_node": 6,
+}
+_GUIDED_PRUNER = None
+
+
+def configure_guided_pruning(enabled=False, model_path=None, threshold=0.55, keep_ratio=0.35, top_k_per_node=6):
+    global _GUIDED_PRUNING_CONFIG, _GUIDED_PRUNER
+    _GUIDED_PRUNING_CONFIG = {
+        "enabled": bool(enabled),
+        "model_path": model_path,
+        "threshold": float(threshold),
+        "keep_ratio": float(keep_ratio),
+        "top_k_per_node": int(top_k_per_node),
+    }
+    _GUIDED_PRUNER = None
+
+
+def _get_guided_pruner():
+    global _GUIDED_PRUNER
+    if _GUIDED_PRUNER is not None:
+        return _GUIDED_PRUNER
+    if not _GUIDED_PRUNING_CONFIG.get("enabled") or GuidedArcPruner is None or PruningConfig is None:
+        return None
+    config = PruningConfig(
+        enabled=True,
+        model_path=_GUIDED_PRUNING_CONFIG.get("model_path"),
+        threshold=_GUIDED_PRUNING_CONFIG.get("threshold", 0.55),
+        keep_ratio=_GUIDED_PRUNING_CONFIG.get("keep_ratio", 0.35),
+        top_k_per_node=_GUIDED_PRUNING_CONFIG.get("top_k_per_node", 6),
+    )
+    _GUIDED_PRUNER = GuidedArcPruner(config=config)
+    return _GUIDED_PRUNER
+
+
+def apply_gnn_pruning_to_arcs(params, arcs: Set[Tuple[int, int]], dual_pi=None,
+                              threshold: Optional[float] = None,
+                              keep_ratio: Optional[float] = None,
+                              top_k_per_node: Optional[int] = None):
+    """Apply GNN pruning to an arc set using current dual values.
+    
+    This is called per CG iteration to adapt pruning to changing reduced costs.
+    Always returns at least the depot arcs for feasibility.
+    """
+    if not _GUIDED_PRUNING_CONFIG.get("enabled"):
+        return arcs
+    
+    pruner = _get_guided_pruner()
+    if pruner is None or not arcs:
+        return arcs
+    
+    threshold = _GUIDED_PRUNING_CONFIG.get("threshold", 0.55) if threshold is None else threshold
+    keep_ratio = _GUIDED_PRUNING_CONFIG.get("keep_ratio", 0.35) if keep_ratio is None else keep_ratio
+    top_k_per_node = _GUIDED_PRUNING_CONFIG.get("top_k_per_node", 6) if top_k_per_node is None else top_k_per_node
+    
+    pruned = pruner.prune_arcs(
+        params,
+        arcs,
+        dual_pi=dual_pi,
+        threshold=threshold,
+        keep_ratio=keep_ratio,
+        top_k_per_node=top_k_per_node,
+    )
+    return pruned if pruned else arcs
+
+
+def apply_gnn_pruning_to_expanded_graph(expanded_backend, params, dual_pi=None,
+                                        threshold: Optional[float] = None,
+                                        keep_ratio: Optional[float] = None,
+                                        top_k_per_node: Optional[int] = None):
+    """Apply GNN pruning to the currently selected expanded graph.
+
+    The returned graph is a copy of the expanded graph with low-scoring edges
+    removed. If pruning is disabled or the backend cannot provide a graph,
+    returns None so the caller can fall back to the exact cached graph.
+    """
+    if not _GUIDED_PRUNING_CONFIG.get("enabled"):
+        return None
+
+    pruner = _get_guided_pruner()
+    if pruner is None or expanded_backend is None:
+        return None
+
+    selected_idx = getattr(expanded_backend, "selected_idx", None)
+    graph_cache = getattr(expanded_backend, "graph_cache", None)
+    if selected_idx is None or not graph_cache:
+        return None
+
+    try:
+        expanded_graph = graph_cache[selected_idx]["graph"]
+    except Exception:
+        return None
+
+    threshold = _GUIDED_PRUNING_CONFIG.get("threshold", 0.55) if threshold is None else threshold
+    keep_ratio = _GUIDED_PRUNING_CONFIG.get("keep_ratio", 0.35) if keep_ratio is None else keep_ratio
+    top_k_per_node = _GUIDED_PRUNING_CONFIG.get("top_k_per_node", 6) if top_k_per_node is None else top_k_per_node
+
+    pruned = pruner.prune_expanded_graph(
+        params,
+        expanded_graph,
+        dual_pi=dual_pi,
+        threshold=threshold,
+        keep_ratio=keep_ratio,
+        top_k_per_node=top_k_per_node,
+    )
+    if pruned is None:
+        return None
+
+    kept_edges = pruned.number_of_edges() if hasattr(pruned, "number_of_edges") else 0
+    original_edges = expanded_graph.number_of_edges() if hasattr(expanded_graph, "number_of_edges") else 0
+    print(f"[MLPricing][GNN] Expanded graph pruning kept {kept_edges}/{original_edges} edges")
+    return pruned
+
+
+def build_reduced_graph(params, feature_csv: Optional[str] = None, predict_fn: Optional[Callable] = None,
+                        use_gnn_pruning: Optional[bool] = None, gnn_threshold: Optional[float] = None,
+                        gnn_keep_ratio: Optional[float] = None, gnn_top_k_per_node: Optional[int] = None,
+                        gnn_model_path: Optional[str] = None):
     """Read arc-feature CSV and return set of arcs predicted relevant A_r.
 
     Returns: set of (from,to) tuples (integers)

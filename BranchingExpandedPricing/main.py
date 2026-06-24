@@ -1,7 +1,5 @@
 import sys
 import os
-
-# Add parent directory to path to import Common modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from branchBound import BranchAndBound
@@ -404,7 +402,10 @@ def main(datasetPath,
          enable_early_stop_pricing = False, # Enable early stopping in SPPRC (disabled by default)
          gap_threshold = None,              # Optional optimality gap to stop early
          heuristic = 'savings',             # Initial heuristic: 'savings' or 'solomon'
-         time_limit = None):                # Time limit in seconds (None for no limit)
+         time_limit = None,                 # Time limit in seconds (None for no limit)
+         use_expanded_pricing = True,      # Optional expanded-graph pricing backend
+         expanded_max_m = 10,             # Optional max m for expanded-graph precomputation
+         expanded_max_routes = 20):         # Max columns returned per expanded-pricing call
     """
     Main function to solve VRPTW using Branch-and-Price with acceleration techniques.
     
@@ -426,7 +427,10 @@ def main(datasetPath,
                        deletion_threshold=deletion_threshold,
                        enable_early_stop=enable_early_stop_pricing,
                        gap_threshold=gap_threshold,
-                       time_limit=time_limit)
+                       time_limit=time_limit,
+                       use_expanded_pricing=use_expanded_pricing,
+                       expanded_max_m=expanded_max_m,
+                       expanded_max_routes=expanded_max_routes)
 
     # Initialize problem instance
     user_param = ParamsVRP()
@@ -485,7 +489,6 @@ def main(datasetPath,
     
     print("="*70)
 
-
 if __name__ == "__main__":
 
     # Start logging to a timestamped file (also tee to console)
@@ -493,12 +496,14 @@ if __name__ == "__main__":
 
     # Allow overriding dataset path from environment for batch runs
     dataset_env = os.environ.get('BNP_DATASET_PATH')
-    default_dataset = r"C:\Users\CiSTUP\Downloads\CVRTPW_Dataset\solomon_50_customer_instances\c104.txt"
+    default_dataset = r"C:\Users\CiSTUP\Downloads\CVRTPW_Dataset\solomon_25_customer_instances\c102.txt"
     datasetPath = dataset_env if dataset_env else default_dataset
 
     # Single dataset processing
-    # Choose heuristic: 'savings' (Clarke-Wright) or 'solomon' (Solomon's I1 insertion)
     main(datasetPath=datasetPath, 
          SHOWFIG=False,
          heuristic='savings',
-         time_limit=1000) 
+         time_limit=1000,
+         use_expanded_pricing=True,
+         expanded_max_m=1,
+         expanded_max_routes=20)  # Run with expanded_max_m=1 to prevent expansion beyond m=1.

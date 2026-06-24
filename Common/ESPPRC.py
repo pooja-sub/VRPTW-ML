@@ -1,6 +1,9 @@
 import heapq
 from functools import cmp_to_key
 import numpy as np
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
 from route import Route
 from paramsVRP import ParamsVRP
 from sortedcontainers import SortedSet
@@ -27,7 +30,7 @@ from functools import total_ordering
 '''
 
 
-class SPPRC:
+class ESPPRC:
 
     def __init__(self, userParam=None):
         self.paramsVRP = ParamsVRP() if userParam is None else userParam
@@ -74,9 +77,9 @@ class SPPRC:
                             return False
                         else:
                             i = 0
-                            while i < self.parent.paramsVRP.nbclients:
-                                if A.vertex_visited[i] != B.vertex_visited[i]:
-                                    if A.vertex_visited[i]:
+                            while i < len(self.vertex_visited):
+                                if self.vertex_visited[i] != other.vertex_visited[i]:
+                                    if self.vertex_visited[i]:
                                         return True
                                     else:
                                         return False
@@ -103,65 +106,52 @@ class SPPRC:
                     if self.ttime - other.ttime > -1e-7 and self.ttime - other.ttime < 1e-7:
                         if self.demand - other.demand > -1e-7 and self.demand - other.demand < 1e-7:
                             i = 0
-                            while i < self.parent.paramsVRP.nbclients:
+                            while i < len(self.vertex_visited):
                                 if self.vertex_visited[i] != other.vertex_visited[i]:
-                                    if self.vertex_visited[i]:
-                                        return False
-                                    else:
-                                        return False
+                                    return False
                                 i += 1
                             return True
 
 
-
-    '''
-    class MyLabelComparator:
-
-        def __init__(self, parent):
-            self.parent = parent
-
-        def compare(self, a, b):
-            A = self.parent.labels[a]
-            B = self.parent.labels[b]
-
-            try:
-                if A.cost - B.cost < 1e-7:
-                    return -1
-                elif A.cost - B.cost > 1e-7:
-                    return 1
-                else:
-                    if A.city == B.city:
-                        if A.ttime - B.ttime < -1e-7:
-                            return -1
-                        elif A.ttime - B.ttime > 1e-7:
-                            return 1
-                        else:
-                            if A.demand - B.demand < -1e-7:
-                                return -1
-                            elif A.demand - B.demand > 1e-7:
-                                return 1
-                            else:
-                                i = 0
-                                while i < self.parent.paramsVRP.nbclients:
-                                    if A.vertex_visited[i] != B.vertex_visited[i]:
-                                        if A.vertex_visited[i]:
-                                            return -1
-                                        else:
-                                            return 1
-                                    i += 1
-                                return 0
-                    elif A.city > B.city:
-                        return 1
-                    else:
-                        return -1
-            except Exception as e:
-                print("Error in MyLabelComparator.compare: ", e)
+    def shortestPath(self, userParamArg, routes, nbroute, early_stop=True, 
+                     lambda_pricing=True, lambda_factor=2.0, dual_pi=None, max_columns=None,
+                     eliminated_customers=None, min_columns_early_stop=10):
         '''
+        This function implements the label-setting algorithm from Irnish and Desaulniers
+        with multi-column selection using filtering rules.
 
-
-    def shortestPath(self, userParamArg, routes, nbroute):
-        print("[---SPPRC.shortestPath called---]")
+        NOTE - this code implements 2 techniques
+        1. dominance
+        2. early elimination of customers (speedup 3) -> Feillet et al. (2004), p. 495, Section 4.4
+        
+          FILTERING RULES:
+          1. Lambda Pricing Rule (Bixby et al., 1992) - Ratio only:
+              - l(π) = min{c_x / (π^T a_x) | π^T a_x > 0}
+              - Keep columns with c_x / (π^T a_x) ≤ λ · l(π)
+              - Good for set partitioning problems
+              - Keeps richer columns (more non-zero entries) in addition to most negative
+          
+          2. Node Elimination by Dual Values:
+              - Eliminate customers with very high negative dual values
+              - These customers make it harder to achieve negative reduced cost
+              - Controlled by eliminated_customers parameter
+        
+        :param early_stop: If True, stop as soon as min_columns_early_stop negative cost routes are found.
+        :param lambda_pricing: If True, apply lambda pricing rule (ratio-based)
+        :param lambda_factor: Multiplier for lambda pricing rule (default 2.0)
+        :param dual_pi: List of dual values π for customers to compute π^T a_x
+        :param max_columns: Maximum number of columns to keep.
+        :param eliminated_customers: Set of customer IDs (1-indexed) to eliminate from pricing.
+        :param min_columns_early_stop: Minimum number of columns to generate before early stopping (default 10).
+        '''
+        if eliminated_customers is None:
+            eliminated_customers = set()
+        
+        print(f"[---ESPPRC.shortestPath called---] early_stop={early_stop}, lambda_pricing={lambda_pricing}, min_columns_early_stop={min_columns_early_stop}, eliminated_customers={eliminated_customers}")
         self.paramsVRP = userParamArg
+        node_count = self.paramsVRP.dist.shape[0]
+        if max_columns is None:
+            max_columns = 2 * nbroute
 
         # Initialize unprocessed labels list (U) and processed labels list (P)
         U = SortedSet(key=lambda x: x)
@@ -169,22 +159,25 @@ class SPPRC:
 
         # Initialize labels array        labels = []
         # for depot 0
-        cust = [False] * (self.paramsVRP.nbclients)
+        cust = [False] * node_count
         cust[0] = True
         self.labels.append(self.label(0, -1, 0.0, 0, 0, False, cust, self))  # First label: start from depot (client 0)
         U.add(0)
 
         # For each city, an array with the index of the corresponding labels (for dominance)
-        checkDom = [0] * self.paramsVRP.nbclients # 每个客户节点 被检查过“占优性”的节点有多少个
-        city2labels = [[] for _ in range(self.paramsVRP.nbclients)]
+        checkDom = [0] * node_count # Number of labels checked for dominance at each customer node
+        city2labels = [[] for _ in range(node_count)]
         city2labels[0].append(0)
         #print("checkDom", checkDom)
         #print("city2labels:", city2labels)
 
         nbsol = 0
-        maxsol = 2 * nbroute
+        maxsol = max_columns
+        min_cost = None  # Track minimum cost for lambda pricing
 
-        while U and nbsol < maxsol:
+        # Single-best-column mode: explore all labels to avoid truncating the true minimum reduced cost path.
+        # while U and nbsol < maxsol:
+        while U:
             #print("U:", U)
             current_idx = 0
             current_idx = U.pop(0)  # Process one label => get the index AND remove it from U
@@ -198,9 +191,9 @@ class SPPRC:
                     la1, la2 = self.labels[l1], self.labels[l2]
                     if not la1.dominated and not la2.dominated and l1 != l2:
 
-                        # Q1：判断 标签2 是否被占优
+                        # Q1: Check if label 2 is dominated
                         pathdom = True
-                        for k in range(1, self.paramsVRP.nbclients):
+                        for k in range(1, node_count):
                             if not pathdom:
                                 break
                             pathdom = pathdom and (not la1.vertex_visited[k] or la2.vertex_visited[k])
@@ -213,8 +206,8 @@ class SPPRC:
                             pathdom = False
 
                         pathdom = True
-                        # Q2：判断 标签1 是否被占优
-                        for k in range(1, self.paramsVRP.nbclients):
+                        # Q2: Check if label 1 is dominated
+                        for k in range(1, node_count):
                             pathdom = pathdom and (not la2.vertex_visited[k] or la1.vertex_visited[k])
                         if pathdom and la2.cost <= la1.cost and la2.ttime <= la1.ttime and la2.demand <= la1.demand:
                             #print(f'U:{U}')
@@ -228,22 +221,36 @@ class SPPRC:
                 city2labels[current.city].remove(c)
             cleaning = None
 
-            # 更新CheckDom：所有在city2labels的label都检查过dominance
+            # Update CheckDom: all labels in city2labels have been checked for dominance
             checkDom[current.city] = len(city2labels[current.city])
             #print(f'U:{U}, checkDom:{checkDom}')
 
             # Expand REF
             if not current.dominated:
                 #print(f'[current_idx]:{current_idx} is not dominated')
-                if current.city == self.paramsVRP.nbclients - 1:  # Shortest path candidate to the depot!
+                if current.city == self.paramsVRP.nbclients:  # Shortest path candidate to the depot!
                     if current.cost < -1e-7:  # SP candidate for the column generation
                         P.add(current_idx)
                         #print(f'[current_idx ADDED]:{current_idx}')
                         nbsol = sum(1 for labi in P if not self.labels[labi].dominated)
+                        
+                        # Track minimum cost for lambda pricing
+                        if min_cost is None or current.cost < min_cost:
+                            min_cost = current.cost
+                        
+                        # Single-best-column mode: disable early stop so we do not stop before seeing the best column.
+                        # if early_stop and nbsol >= min_columns_early_stop:
+                        #     print(f"  [Early Stop] Found {nbsol} negative cost routes (>= {min_columns_early_stop}), stopping label exploration.")
+                        #     break
                 else:  # If not the depot, we can consider extensions of the path
-                    for i in range(self.paramsVRP.nbclients):
+                    for i in range(node_count):
+                        # Skip eliminated customers (node elimination strategy)
+                        if i in eliminated_customers:
+                            continue
+                        
                         if not current.vertex_visited[i] and self.paramsVRP.dist[current.city][i] < self.paramsVRP.verybig - 1e-6:
-                            tt = current.ttime + self.paramsVRP.ttime[current.city][i] + self.paramsVRP.s[current.city]
+                            # ttime already includes service time at current.city
+                            tt = current.ttime + self.paramsVRP.s[current.city] + self.paramsVRP.ttime[current.city][i]
                             if tt < self.paramsVRP.a[i]:
                                 tt = self.paramsVRP.a[i]
                             d = current.demand + self.paramsVRP.d[i]
@@ -254,9 +261,10 @@ class SPPRC:
                                 newcust[i] = True
 
                                 # Speedup: third technique - Feillet 2004 as mentioned in Laporte's paper
-                                for j in range(1, self.paramsVRP.nbclients - 1):
+                                for j in range(1, self.paramsVRP.nbclients):
                                     if not newcust[j]:
-                                        tt2 = tt + self.paramsVRP.ttime[i][j] + self.paramsVRP.s[i]
+                                        # ttime[i][j] already includes service time at i
+                                        tt2 = tt + self.paramsVRP.s[i] + self.paramsVRP.ttime[i][j]
                                         d2 = d + self.paramsVRP.d[j]
                                         if tt2 > self.paramsVRP.b[j] or d2 > self.paramsVRP.capacity:
                                             newcust[j] = True
@@ -269,20 +277,93 @@ class SPPRC:
                                     self.labels[idx].dominated = True
 
         # Filtering: find the path from depot to the destination
-        i = 0
+        # Apply filtering rules before converting labels to routes
+        valid_labels = []
+        
+        for lab_idx in P:
+            if not self.labels[lab_idx].dominated and self.labels[lab_idx].cost < -1e-4:
+                valid_labels.append((lab_idx, self.labels[lab_idx].cost))
+        
+        # Sort by cost (most negative first)
+        valid_labels.sort(key=lambda x: x[1])
+        
+        # Apply lambda pricing rule if enabled (ratio-only)
+        # Lambda pricing rule (Bixby et al., 1992):
+        # Define ratio r_x = (-c_x) / (π^T a_x) for columns with c_x < 0 and π^T a_x > 0
+        # l(π) = min_{x∈X} r_x
+        # Keep columns with r_x ≤ λ · l(π)
+        # Single-best-column mode: disable lambda pricing filtering to preserve the global min reduced-cost candidate.
+        # if lambda_pricing and valid_labels:
+        #     ratios = []
+        #     for lab_idx, cost in valid_labels:
+        #         # Reconstruct the route path to compute π^T a_x from duals
+        #         path = []
+        #         path_idx = lab_idx
+        #         while path_idx >= 0:
+        #             path.append(self.labels[path_idx].city)
+        #             path_idx = self.labels[path_idx].index_prev_label
+        #         path.reverse()
+
+        #         # Compute π^T a_x using provided duals
+        #         pi_T_ax = 0.0
+        #         if dual_pi is not None:
+        #             for city in path[1:-1]:  # Exclude depots
+        #                 if 1 <= city < self.paramsVRP.nbclients:
+        #                     pi_T_ax += dual_pi[city - 1]
+
+        #         # Only consider columns with π^T a_x > 0 to avoid division by zero
+        #         if pi_T_ax > 1e-9:
+        #             # cost is reduced cost and negative for improving columns; use -cost for positive ratio
+        #             ratio = (-cost) / pi_T_ax
+        #             ratios.append((lab_idx, cost, ratio))
+
+        #     if ratios:
+        #         ratios.sort(key=lambda x: x[2])
+        #         min_ratio = ratios[0][2]  # l(π), now positive
+        #         lambda_threshold = lambda_factor * min_ratio
+
+        #         # Keep columns with ratio ≤ threshold
+        #         valid_labels = [(lab_idx, cost) for lab_idx, cost, ratio in ratios
+        #                         if ratio <= lambda_threshold]
+
+        #         print(f"  [Lambda Pricing (Ratio) - Bixby et al., 1992]")
+        #         print(f"    l(π) = min((-c_x) / π^T a_x) = {min_ratio:.4f}")
+        #         print(f"    λ · l(π) = {lambda_factor} × {min_ratio:.4f} = {lambda_threshold:.4f}")
+        #         print(f"    Kept {len(valid_labels)} columns under ratio threshold")
+        
+        # Convert labels to routes: add only one column per iteration (the most negative reduced-cost one).
         checkDom = None
-        while i < nbroute and P:
-            lab = P.pop(0)
-            if not self.labels[lab].dominated:
-                if self.labels[lab].cost < -1e-4:
-                    route = Route()
-                    route.set_cost(self.labels[lab].cost)
-                    route.add_city(self.labels[lab].city)
-                    path = self.labels[lab].index_prev_label
-                    while path >= 0:
-                        route.add_city(self.labels[path].city)
-                        path = self.labels[path].index_prev_label
-                    route.switch_path()
-                    routes.append(route)
-                    #print(f'[route ADDED]:{route}', f'[route.cost]:{route.get_cost()}', f'[route.path]:{route.get_path()}')
-                    i += 1
+        if valid_labels:
+            lab_idx, cost = valid_labels[0]
+            route = Route()
+            route.set_cost(self.labels[lab_idx].cost)
+            route.add_city(self.labels[lab_idx].city)
+            path = self.labels[lab_idx].index_prev_label
+            while path >= 0:
+                route.add_city(self.labels[path].city)
+                path = self.labels[path].index_prev_label
+            route.switch_path()
+            routes.append(route)
+
+        #     # Convert labels to routes
+        # i = 0
+        # checkDom = None
+        # for lab_idx, cost in valid_labels:
+        #     if i >= nbroute:
+        #         break
+            
+        #     route = Route()
+        #     route.set_cost(self.labels[lab_idx].cost)
+        #     route.add_city(self.labels[lab_idx].city)
+        #     path = self.labels[lab_idx].index_prev_label
+        #     while path >= 0:
+        #         route.add_city(self.labels[path].city)
+        #         path = self.labels[path].index_prev_label
+        #     route.switch_path()
+        #     routes.append(route)
+        #     i += 1        
+        if routes:
+            print(f"  [Columns Generated] {len(routes)} columns returned, costs: {[r.cost for r in routes]}")
+
+        # Return label indices and costs used for ratio filtering (not used by caller currently)
+        return valid_labels
