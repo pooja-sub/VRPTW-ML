@@ -1,8 +1,11 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import gurobipy as gp
 from gurobipy import GRB
-from paramsVRP import ParamsVRP
-# from route import Route
-from ESPPRC import ESPPRC
+from Common.paramsVRP import ParamsVRP
+from Common.ESPPRC import ESPPRC
 from expanded_pricing import ExpandedGraphPricing
 import numpy as np
 import time
@@ -320,18 +323,7 @@ class ColumnGeneration:
             "ClientService"
         )
 
-        # Optional vehicle count bounds (for vehicle-count branching)
-        # vehicle_constr_lower = None
-        # vehicle_constr_upper = None
-        # if vehicle_lower_bound is not None:
-        #     vehicle_constr_lower = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) >= vehicle_lower_bound,
-        #                                            name="VehicleCountLower")
-        # if vehicle_upper_bound is not None:
-        #     vehicle_constr_upper = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) <= vehicle_upper_bound,
-        #                                            name="VehicleCountUpper")
-
         model.update()
-        #print(constraints)
 
         # Set objective function
         model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
@@ -423,64 +415,14 @@ class ColumnGeneration:
                          for client in range(1, self.paramsVRP.nbclients)),
                         "ClientService"
                     )
-                    # if vehicle_lower_bound is not None:
-                    #     vehicle_constr_lower = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) >= vehicle_lower_bound,
-                    #                                            name="VehicleCountLower")
-                    # if vehicle_upper_bound is not None:
-                    #     vehicle_constr_upper = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) <= vehicle_upper_bound,
-                    #                                            name="VehicleCountUpper")
                     model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
                     model.update()
                     continue
-            
-            # DISABLED: Apply variable fixing at regular intervals
-            # if iteration > 0 and iteration % fix_interval == 0:
-            #     print(f"[Iteration {iteration}] Applying variable fixing by reduced cost...")
-            #     fixed_count = self.fix_variables_by_reduced_cost(model, y, lower_bound, upper_bound, constraints)
-            #     
-            #     # If routes were fixed, rebuild the model
-            #     if fixed_count > 0:
-            #         # Get active routes (not fixed)
-            #         active_routes = [route for i, route in enumerate(self.routes) if i not in self.fixed_routes]
-            #         
-            #         if len(active_routes) == 0:
-            #             print("[ERROR] All routes have been fixed. Cannot continue.")
-            #             break
-            #         
-            #         # Rebuild model with only active routes
-            #         self.routes = active_routes
-            #         self.fixed_routes.clear()  # Reset indices after rebuilding
-            #         
-            #         # Remove all variables and constraints
-            #         vars_to_remove = model.getVars()
-            #         for var in vars_to_remove:
-            #             model.remove(var)
-            #         constrs_to_remove = model.getConstrs()
-            #         for constr in constrs_to_remove:
-            #             model.remove(constr)
-            #         
-            #         # Recreate with active routes only
-            #         y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
-            #         constraints = model.addConstrs(
-            #             (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-            #              for client in range(1, self.paramsVRP.nbclients)),
-            #             "ClientService"
-            #         )
-            #         # if vehicle_lower_bound is not None:
-            #         #     vehicle_constr_lower = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) >= vehicle_lower_bound,
-            #         #                                            name="VehicleCountLower")
-            #         # if vehicle_upper_bound is not None:
-            #         #     vehicle_constr_upper = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) <= vehicle_upper_bound,
-            #         #                                            name="VehicleCountUpper")
-            #     model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
-            #     model.update()
-                    
-                    # Re-optimize after fixing
-                    continue
+        
 
             # Update SPPRC cost matrix
             for i in range(1, self.paramsVRP.nbclients):
-                for j in range(self.paramsVRP.nbclients + 2):
+                for j in range(self.paramsVRP.nbclients + 1):
                     self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
                     # if self.paramsVRP.cost[i][j] < 0:
                     #     #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
@@ -492,6 +434,7 @@ class ColumnGeneration:
                 eliminated_nodes = self.eliminate_nodes_by_dual_values(pi)
 
             new_routes = []
+            graph_expand_time = 0.0
 
             # Solve pricing problem (PP)
             pp_start = time.time()
@@ -503,6 +446,7 @@ class ColumnGeneration:
                     dual_pi=pi,
                     max_routes=max_routes,
                 )
+                graph_expand_time = getattr(self.expanded_pricing, "last_graph_expand_time", 0.0)
             else:
                 # Determine if this is the final pricing (proving optimality)
                 # is_final_pricing = (iteration > 0)  # After first iteration, we're refining
@@ -521,7 +465,11 @@ class ColumnGeneration:
             self.pp_time += (pp_end - pp_start)
             
             elapsed_total = time.time() - col_gen_start_time
-            print(f"[Pricing] Generated {len(new_routes)} columns: {[r.cost for r in new_routes]} | PP time: {(pp_end - pp_start):.2f}s | Total elapsed: {elapsed_total:.2f}s")
+            print(
+                f"[Pricing] Generated {len(new_routes)} columns: {[r.cost for r in new_routes]} | "
+                f"PP time: {(pp_end - pp_start):.2f}s | Graph expansion: {graph_expand_time:.2f}s | "
+                f"Total elapsed: {elapsed_total:.2f}s"
+            )
 
             # Check if there are new negative cost paths
             if not new_routes:
@@ -529,17 +477,28 @@ class ColumnGeneration:
                 # Check model status
                 if model.status == GRB.OPTIMAL:
                     elapsed_total = time.time() - col_gen_start_time
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal} | Total elapsed: {elapsed_total:.2f}s")
+                    print(
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Objective = {model.objVal} | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 elif model.status == GRB.INFEASIBLE:
                     elapsed_total = time.time() - col_gen_start_time
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible. | Total elapsed: {elapsed_total:.2f}s")
+                    print(
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model is infeasible. | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 elif model.status == GRB.UNBOUNDED:
                     elapsed_total = time.time() - col_gen_start_time
-                    print(f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded. | Total elapsed: {elapsed_total:.2f}s")
+                    print(
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model is unbounded. | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 else:
                     elapsed_total = time.time() - col_gen_start_time
                     print(
-                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status} | Total elapsed: {elapsed_total:.2f}s")
+                        f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status} | "
+                        f"Graph expansion: {graph_expand_time:.2f}s | Total elapsed: {elapsed_total:.2f}s"
+                    )
                 break
 
             # Add new routes to the pool, skipping duplicate paths.
@@ -579,9 +538,3 @@ class ColumnGeneration:
 
         return model.objVal, self.routes
 
-        '''
-        except gp.GurobiError as e:
-            print(f"Gurobi Error: {e}")
-        except Exception as e:
-            print(f"Error in compute_col_gen: {e}")
-        '''

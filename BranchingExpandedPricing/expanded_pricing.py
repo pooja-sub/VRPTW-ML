@@ -7,7 +7,7 @@ from collections import defaultdict
 
 import networkx as nx
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from Branching.route import Route
+from Common.route import Route
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_THIS_DIR)
@@ -15,7 +15,7 @@ _GRAPH_TRANSFORM_DIR = os.path.join(_ROOT_DIR, "graphTransform")
 if _GRAPH_TRANSFORM_DIR not in sys.path:
     sys.path.insert(0, _GRAPH_TRANSFORM_DIR)
 
-from graphTransformation import GraphTransformation  # noqa: E402
+from graphTransformation import graphTransformation_digraph_depot  # noqa: E402  # type: ignore[import-not-found]
 
 
 class _Label:
@@ -80,19 +80,29 @@ class ExpandedGraphPricing:
 
     def _build_expanded_graph(self, m, user_param=None):
         t0 = time.time()
-        # Pass the already-preprocessed ParamsVRP so GraphTransformation uses
-        # the arc-eliminated dist matrix and does not re-read/print the instance.
-        gt = GraphTransformation(self.instance_path, m=m, params=user_param)
+        # Build original directed graph from ParamsVRP
+        G_original = nx.DiGraph()
+        n = user_param.nbclients
+        
+        # Add all nodes (depot 0 through customers and end depot)
+        for i in range(n + 1):
+            G_original.add_node(i)
+        
+        # Add edges from feasible arcs
+        for i in range(n + 1):
+            for j in range(n + 1):
+                if i != j and user_param.dist[i][j] < user_param.verybig - 1e-6:
+                    G_original.add_edge(i, j, cost=user_param.cost[i][j])
+        
+        # Use depot-based graph transformation
         if self.quiet_graph_logs:
             with contextlib.redirect_stdout(io.StringIO()):
-                gt.create_undirected_graph()
-                gt.enumerate_phase1()
-                expanded_graph = gt.enumerate_phase2()
+                expanded_graph = graphTransformation_digraph_depot(G_original, m=m)
         else:
-            gt.create_undirected_graph()
-            gt.enumerate_phase1()
-            expanded_graph = gt.enumerate_phase2()
-        return gt, expanded_graph, time.time() - t0
+            expanded_graph = graphTransformation_digraph_depot(G_original, m=m)
+        
+        # Return None for gt since we're not using GraphTransformation class anymore
+        return None, expanded_graph, time.time() - t0
 
     @staticmethod
     def _is_dag(expanded_graph):
@@ -227,7 +237,7 @@ class ExpandedGraphPricing:
         n = p.nbclients
         last_customer = n - 1
         depot_start = 0
-        depot_end = n
+        depot_end = n + 1  # End depot is n+1 in depot-based transformation
 
         if dual_pi is None:
             dual_pi = [0.0] * last_customer
@@ -255,15 +265,19 @@ class ExpandedGraphPricing:
         node_labels = defaultdict(list)
         pending = []
 
-        origin_candidates = [node for node in expanded_graph.nodes() if isinstance(node, tuple) and node[0] == depot_start]
+        # Find origin candidates: tuple states starting with depot (or just the depot itself)
+        origin_candidates = []
+        for node in expanded_graph.nodes():
+            if isinstance(node, tuple) and len(node) > 0 and node[0] == depot_start:
+                origin_candidates.append(node)
+
         if not origin_candidates:
             return []
 
-        # Prefer the canonical origin state (0, -1, -1, ...), but fall back to any
-        # origin-labeled node if the transformed graph uses a different padding style.
+        # Prefer the canonical origin state (0, 0, 0, ...), but fall back to any origin node
         origin_node = None
         for node in origin_candidates:
-            if len(node) > 1 and all(x == -1 for x in node[1:]):
+            if all(x == depot_start for x in node):  # All zeros
                 origin_node = node
                 break
         if origin_node is None:
@@ -281,17 +295,29 @@ class ExpandedGraphPricing:
             if current.dominated:
                 continue
 
-            if current.node[0] == depot_end:
+            # Extract current city: handle both tuple states and singleton nodes
+            if isinstance(current.node, tuple):
+                city_cur = current.node[0]
+                is_sink = city_cur == depot_end
+            else:
+                city_cur = current.node
+                is_sink = city_cur == depot_end
+            
+            if is_sink:
                 if current.rc < -1e-7:
                     completed_routes.append(current)
                 continue
 
-            city_cur = current.node[0]
-
             for neighbour, _ in out_edges[current.node]:
-                city_next = neighbour[0]
+                # Extract next city: handle both tuple states and singleton nodes
+                if isinstance(neighbour, tuple):
+                    city_next = neighbour[0]
+                    is_next_sink = city_next == depot_end
+                else:
+                    city_next = neighbour
+                    is_next_sink = city_next == depot_end
 
-                if neighbour == (depot_end,) or (isinstance(neighbour, tuple) and len(neighbour) == 1 and neighbour[0] == depot_end):
+                if is_next_sink:
                     sink_lbl = _Label(
                         node=neighbour,
                         time=current.time,
@@ -359,10 +385,12 @@ class ExpandedGraphPricing:
         neg_routes.sort(key=lambda r: r["rc"])
         return neg_routes
 
-    def price(self, user_param, dual_pi, max_routes=20):
+    def price(self, user_param, dual_pi, max_routes=20, expanded_graph=None):
         """Return Route objects generated from expanded-graph pricing for this BnP node."""
         if self.selected_idx is None:
             return []
+
+        working_graph = expanded_graph if expanded_graph is not None else self.graph_cache[self.selected_idx]["graph"]
 
         # Ensure the selected expanded graph does not contain a negative
         # reduced-cost cycle under the current duals. If it does, try to
@@ -372,7 +400,7 @@ class ExpandedGraphPricing:
         while True:
             selected = self.graph_cache[self.selected_idx]
             m = selected["m"]
-            expanded_graph = selected["graph"]
+            expanded_graph = working_graph
 
             has_neg = False
             try:
@@ -393,11 +421,12 @@ class ExpandedGraphPricing:
                 break
 
         if not self.quiet_spprc_logs:
-            print(f"[ExpandedPricing] Running expanded-graph SPPRC on cached m={self.graph_cache[self.selected_idx]['m']}")
+            graph_tag = "caller-pruned" if working_graph is not self.graph_cache[self.selected_idx]["graph"] else f"cached m={self.graph_cache[self.selected_idx]['m']}"
+            print(f"[ExpandedPricing] Running expanded-graph SPPRC on {graph_tag}")
 
         priced = self._spprc_on_expanded(
             user_param=user_param,
-            expanded_graph=self.graph_cache[self.selected_idx]["graph"],
+            expanded_graph=working_graph,
             dual_pi=dual_pi,
             max_routes=max_routes,
         )

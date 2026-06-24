@@ -1,7 +1,9 @@
-import gurobipy as gp
-from gurobipy import GRB
-from paramsVRP import ParamsVRP
-from route import Route
+import sys
+import os
+
+# Add parent directory to path to import Common modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from columnGen import ColumnGeneration
 import numpy as np
 import copy
@@ -42,19 +44,6 @@ class BranchAndBound:
             self.vehicle_lower_bound = vehicle_lower_bound
             self.vehicle_upper_bound = vehicle_upper_bound
 
-    # def _deduplicate_routes_by_path(self, routes):
-    #     """
-    #     Keep only one copy of each route path.
-    #     """
-    #     unique_routes = []
-    #     seen_paths = set()
-    #     for route in routes:
-    #         route_key = route.path_key()
-    #         if route_key in seen_paths:
-    #             continue
-    #         seen_paths.add(route_key)
-    #         unique_routes.append(route)
-    #     return unique_routes
 
     def edges_based_on_branching(self, user_param, branching, recur):
         if branching.father is not None:  # Stop before root node
@@ -77,22 +66,6 @@ class BranchAndBound:
             if recur:
                 self.edges_based_on_branching(user_param, branching.father, recur)
 
-    # def vehicle_count_branch(self, routes):
-    #     """
-    #     Branching rule on total number of vehicles (Desrochers, Desrosiers, Solomon 1992).
-    #
-    #     Returns bounds (floor, ceil) of the fractional vehicle count if non-integer.
-    #     Caller can pass these as vehicle_lower_bound / vehicle_upper_bound to compute_col_gen.
-    #     """
-    #     total = sum(route.get_Q() for route in routes)
-    #     if total < 0:
-    #         return None
-    #     frac = abs(total - round(total))
-    #     if frac < 1e-6:
-    #         return None
-    #     lower = int(np.floor(total))
-    #     upper = int(np.ceil(total))
-    #     return lower, upper
 
     def bb_node(self, user_param, routes, branching, best_routes, depth):
         import time
@@ -150,11 +123,6 @@ class BranchAndBound:
         self.total_rmp_time += timing_stats['rmp_time']
         self.total_pp_time += timing_stats['pp_time']
 
-        # # Check feasibility
-        # if cg_obj > 2 * user_param.maxlength or cg_obj < -1e-6:
-        #     print(f"RELAX INFEASIBLE | Lower bound: {self.lowerbound} | Upper bound: {self.upperbound} | Gap: {(self.upperbound - self.lowerbound) / self.upperbound} | Depth: {depth} | Routes: {len(routes)}")
-        #     return True
-
         branching.lowest_value = cg_obj
 
         # Update global lower bound
@@ -168,46 +136,6 @@ class BranchAndBound:
             print(f"CUT | Lower bound: {self.lowerbound} | Upper bound: {self.upperbound} | Gap: {(self.upperbound - self.lowerbound) / self.upperbound} | Depth: {depth} | Local CG cost: {cg_obj} | Routes: {len(routes)}")
             return True
 
-        # Hierarchical branching: vehicles first, then edges (DISABLED FOR NOW)
-        # vehicle_bounds = self.vehicle_count_branch(routes)
-        # if vehicle_bounds:
-        #     floor_v, ceil_v = vehicle_bounds
-        #     parent_lower = branching.vehicle_lower_bound
-        #     parent_upper = branching.vehicle_upper_bound
-        #
-        #     # Branch 1: total vehicles <= floor_v
-        #     child1_lower = parent_lower
-        #     child1_upper = floor_v if parent_upper is None else min(parent_upper, floor_v)
-        #
-        #     # Branch 2: total vehicles >= ceil_v
-        #     child2_lower = ceil_v if parent_lower is None else max(parent_lower, ceil_v)
-        #     child2_upper = parent_upper
-        #
-        #     print(f"VEHICLE BRANCH | total={sum(r.get_Q() for r in routes):.4f} | floor={floor_v} | ceil={ceil_v} | Depth: {depth}")
-        #
-        #     # Explore child with upper bound (<= floor)
-        #     if child1_lower is None or child1_upper is None or child1_lower <= child1_upper:
-        #         newnode1 = self.TreeBB(branching, -1, -1, -1, child1_lower, child1_upper)
-        #         if not self.bb_node(user_param, routes, newnode1, best_routes, depth + 1):
-        #             return False
-        #         branching.son0 = newnode1
-        #     else:
-        #         print(f"  [Pruned] Infeasible vehicle upper bound: {child1_lower}>{child1_upper}")
-        #
-        #     # Explore child with lower bound (>= ceil)
-        #     if child2_lower is None or child2_upper is None or child2_lower <= child2_upper:
-        #         newnode2 = self.TreeBB(branching, -1, -1, -1, child2_lower, child2_upper)
-        #         if not self.bb_node(user_param, routes, newnode2, best_routes, depth + 1):
-        #             return False
-        #         if branching.son0 is None:
-        #             branching.son0 = newnode2
-        #         branching.lowest_value = min(branching.lowest_value, newnode2.lowest_value)
-        #     else:
-        #         print(f"  [Pruned] Infeasible vehicle lower bound: {child2_lower}>{child2_upper}")
-        #
-        #     if branching.son0 is not None and branching.lowest_value > branching.son0.lowest_value:
-        #         branching.lowest_value = branching.son0.lowest_value
-        #     return True
 
         # Check integer feasibility and find branching variable on edges
         feasible = True
@@ -216,7 +144,7 @@ class BranchAndBound:
         best_val = 0
 
         # Convert path variables to edge variables
-        user_param.edges = np.zeros((user_param.nbclients + 2, user_param.nbclients + 2))
+        user_param.edges = np.zeros((user_param.nbclients + 1, user_param.nbclients + 1))
         for route in routes:
             if route.get_Q() > 1e-6:
                 path = route.get_path()
@@ -227,8 +155,8 @@ class BranchAndBound:
 
         # Find fractional edge
         fractional_edges_count = 0
-        for i in range(user_param.nbclients + 2):
-            for j in range(user_param.nbclients + 2):
+        for i in range(user_param.nbclients + 1):
+            for j in range(user_param.nbclients + 1):
                 coef = user_param.edges[i][j]
                 if coef > 1e-6 and (coef < 0.9999999999 or coef > 1.0000000001):
                     fractional_edges_count += 1

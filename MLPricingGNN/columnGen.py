@@ -13,10 +13,11 @@ import time
 
 # try to import the ML pricing module (local MLPricing.pricing)
 try:
-    from MLPricing.pricing import build_reduced_graph, run_ml_pricing_iteration
+    from pricing import build_reduced_graph, run_ml_pricing_iteration, apply_gnn_pruning_to_expanded_graph
 except Exception:
     build_reduced_graph = None
     run_ml_pricing_iteration = None
+    apply_gnn_pruning_to_expanded_graph = None
 
 class ColumnGeneration:
     def __init__(self, user_param, use_expanded_pricing=False, expanded_max_m=None, expanded_max_routes=20,
@@ -42,13 +43,12 @@ class ColumnGeneration:
             quiet_spprc_logs=True,
         )
 
-    def compute_col_gen(self, initial_routes, return_stats=False):
+    def compute_col_gen(self, initial_routes):
         """
         Execute the column generation algorithm.
 
         :param initial_routes: Initial route list
-        :param return_stats: If True, include timing/iteration stats in return tuple
-        :return: (obj_val, routes) or (obj_val, routes, stats)
+        :return: Optimal objective value
         """
         #try:
         # Initialize Gurobi model
@@ -106,10 +106,6 @@ class ColumnGeneration:
             else:
                 print(f"[-----Column Generation -----] Iteration {iteration}: Model not solved. Status = {model.status}  RMP_time = {rmp_time:.3f}s")
 
-            if model.status != GRB.OPTIMAL:
-                print(f"[-]Stopping column generation because RMP status is {model.status} (non-optimal).")
-                break
-
             objectiveFunc = model.getObjective()
             '''
             print(f"Model Objective Function: {objectiveFunc}")
@@ -145,10 +141,23 @@ class ColumnGeneration:
 
                 pp_start = time.time()
                 max_routes = max(1, min(self.expanded_max_routes, self.paramsVRP.nbclients - 1))
+                guided_graph = None
+                if apply_gnn_pruning_to_expanded_graph is not None:
+                    try:
+                        guided_graph = apply_gnn_pruning_to_expanded_graph(
+                            active_backend,
+                            self.paramsVRP,
+                            dual_pi=pi,
+                        )
+                    except Exception as exc:
+                        print(f"[MLPricing][GNN] Expanded-graph pruning error: {exc}; using cached graph")
+                        guided_graph = None
+
                 new_routes = active_backend.price(
                     user_param=self.paramsVRP,
                     dual_pi=pi,
                     max_routes=max_routes,
+                    expanded_graph=guided_graph,
                 )
                 if (pricing_mode == "reduced"
                         and len(new_routes) < self.reduced_graph_min_columns
@@ -171,7 +180,7 @@ class ColumnGeneration:
 
                 # If MLPricing available, run ML-based pricing; otherwise fallback to SPPRC
                 if build_reduced_graph and run_ml_pricing_iteration:
-                    # lazy build of A_r
+                    # lazy build of A_r (RF-based arc set)
                     if not hasattr(self, '_A_r') or self._A_r is None:
                         try:
                             self._A_r = build_reduced_graph(self.paramsVRP)
@@ -291,28 +300,13 @@ class ColumnGeneration:
         total_time = time.time() - total_start
         print(f"[MLPricing] Column generation finished. Total_time = {total_time:.3f}s  RMP_total = {rmp_total:.3f}s  PP_total = {pp_total:.3f}s")
 
-        # Output routes (silent here) — caller prints the final solution.
-        # If RMP ended non-optimally, variable values are unavailable; keep Q=0.
-        has_solution_values = model.status == GRB.OPTIMAL
+        # Output routes (silent here) — caller prints the final solution
         for i, route in enumerate(self.routes):
-            route.set_Q(float(y[i].X) if has_solution_values else 0.0)
+            route.set_Q(y[i].x)
             if route.Q > 0:
                 print(f"Route {i}: Cost = {route.cost}, Q = {route.Q}, Path = {route.path}")
 
-        stats = {
-            "iterations": iteration,
-            "total_time": total_time,
-            "rmp_total": rmp_total,
-            "pp_total": pp_total,
-        }
-
-        # Record final RMP status so callers can react to infeasible/unoptimal RMPs
-        stats["rmp_final_status"] = int(model.status)
-
-        final_obj = float(model.objVal) if model.status == GRB.OPTIMAL else float("inf")
-        if return_stats:
-            return final_obj, self.routes, stats
-        return final_obj, self.routes
+        return model.objVal, self.routes
 
         '''
         except gp.GurobiError as e:

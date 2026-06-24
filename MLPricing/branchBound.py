@@ -1,14 +1,30 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import gurobipy as gp
 from gurobipy import GRB
-from paramsVRP import ParamsVRP
-from route import Route
+from Common.paramsVRP import ParamsVRP
+from Common.route import Route
 from columnGen import ColumnGeneration
+from expanded_pricing import ExpandedGraphPricing
 import numpy as np
 import copy
 
+try:
+    from pricing import build_reduced_graph
+except Exception:
+    try:
+        from MLPricing.pricing import build_reduced_graph
+    except Exception:
+        build_reduced_graph = None
+
 class BranchAndBound:
     def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False, gap_threshold=None,
-                 enable_node_elimination=False, node_elimination_threshold=1.5, min_nonbasic_columns=100, lambda_factor=2.0, time_limit=None):
+                 enable_node_elimination=False, node_elimination_threshold=1.5, min_nonbasic_columns=100,
+                 lambda_factor=2.0, time_limit=None,
+                 use_expanded_pricing=True, expanded_max_m=None, expanded_max_routes=20,
+                 reduced_graph_min_columns=5):
         self.lowerbound = -1e10
         self.upperbound = 1e10
         self.bb_node_count = 0  # Track number of BB nodes processed
@@ -22,12 +38,78 @@ class BranchAndBound:
         self.node_elimination_threshold = node_elimination_threshold
         self.min_nonbasic_columns = min_nonbasic_columns
         self.lambda_factor = lambda_factor
+        self.use_expanded_pricing = use_expanded_pricing
+        self.expanded_max_m = expanded_max_m
+        self.expanded_max_routes = expanded_max_routes
+        self.reduced_graph_min_columns = max(0, int(reduced_graph_min_columns))
+        self.shared_expanded_pricing_full = None
+        self.shared_expanded_pricing_reduced = None
+        self.shared_expanded_pricing_key = None
         
         # Timing statistics and limit
         self.total_rmp_time = 0.0  # Cumulative RMP time across all nodes
         self.total_pp_time = 0.0   # Cumulative PP time across all nodes
+        self.total_cg_time = 0.0   # Cumulative CG wall time across all nodes
+        self.root_rmp_time = 0.0
+        self.root_pp_time = 0.0
+        self.root_cg_time = 0.0
+        self.root_cg_iterations = 0
         self.time_limit = time_limit  # Optional time limit in seconds
         self.start_time = None  # Initialized when bb_node is called
+
+    def _get_shared_expanded_pricing_pair(self, user_param):
+        """Build full/reduced expanded-graph caches once and reuse across BnP nodes."""
+        if not self.use_expanded_pricing:
+            return None, None
+
+        cache_key = (
+            getattr(user_param, "instance_path", ""),
+            int(self.expanded_max_m) if self.expanded_max_m is not None else None,
+        )
+        if self.shared_expanded_pricing_key == cache_key and self.shared_expanded_pricing_full is not None:
+            return self.shared_expanded_pricing_reduced, self.shared_expanded_pricing_full
+
+        base_param = copy.deepcopy(user_param)
+        base_param.dist = copy.deepcopy(user_param.dist_base)
+
+        reduced_param = None
+        if build_reduced_graph is not None:
+            try:
+                allowed_arcs = build_reduced_graph(base_param)
+            except Exception as exc:
+                print(f"[MLPricing] Reduced expanded graph unavailable: {exc}")
+                allowed_arcs = set()
+
+            if allowed_arcs:
+                reduced_param = copy.deepcopy(base_param)
+                verybig = reduced_param.verybig
+                node_count = reduced_param.nbclients + 1
+                for i in range(node_count):
+                    for j in range(node_count):
+                        if (i, j) not in allowed_arcs:
+                            reduced_param.dist[i][j] = verybig
+                print(f"[MLPricing] Built reduced base graph for expanded pricing with {len(allowed_arcs)} allowed arcs")
+
+        print("[MLPricing] Building shared FULL expanded-graph cache")
+        self.shared_expanded_pricing_full = ExpandedGraphPricing(
+            user_param=base_param,
+            max_m=self.expanded_max_m,
+            quiet_graph_logs=True,
+            quiet_spprc_logs=True,
+        )
+
+        self.shared_expanded_pricing_reduced = None
+        if reduced_param is not None:
+            print("[MLPricing] Building shared REDUCED expanded-graph cache")
+            self.shared_expanded_pricing_reduced = ExpandedGraphPricing(
+                user_param=reduced_param,
+                max_m=self.expanded_max_m,
+                quiet_graph_logs=True,
+                quiet_spprc_logs=True,
+            )
+
+        self.shared_expanded_pricing_key = cache_key
+        return self.shared_expanded_pricing_reduced, self.shared_expanded_pricing_full
 
     class TreeBB:
         def __init__(self, father=None, branch_from=-1, branch_to=-1, branch_value=-1,
@@ -130,8 +212,33 @@ class BranchAndBound:
 
         # Compute solution using the local ColumnGeneration implementation.
         # The MLPricing version currently exposes a simplified API.
-        column_gen = ColumnGeneration(user_param)
-        cg_obj, routes = column_gen.compute_col_gen(routes)
+        reduced_backend, full_backend = self._get_shared_expanded_pricing_pair(user_param)
+        column_gen = ColumnGeneration(
+            user_param,
+            use_expanded_pricing=self.use_expanded_pricing,
+            expanded_max_m=self.expanded_max_m,
+            expanded_max_routes=self.expanded_max_routes,
+            shared_expanded_pricing_reduced=reduced_backend,
+            shared_expanded_pricing_full=full_backend,
+            reduced_graph_min_columns=self.reduced_graph_min_columns,
+        )
+        cg_obj, routes, cg_stats = column_gen.compute_col_gen(routes, return_stats=True)
+        self.total_rmp_time += float(cg_stats.get("rmp_total", 0.0))
+        self.total_pp_time += float(cg_stats.get("pp_total", 0.0))
+        self.total_cg_time += float(cg_stats.get("total_time", 0.0))
+        if depth == 0:
+            self.root_rmp_time = float(cg_stats.get("rmp_total", 0.0))
+            self.root_pp_time = float(cg_stats.get("pp_total", 0.0))
+            self.root_cg_time = float(cg_stats.get("total_time", 0.0))
+            self.root_cg_iterations = int(cg_stats.get("iterations", 0))
+
+        # If the RMP at this node did not solve to optimality (e.g., infeasible), prune this node
+        rmp_status = cg_stats.get("rmp_final_status", GRB.OPTIMAL)
+        if rmp_status != GRB.OPTIMAL:
+            print(f"[bb_node] Pruning node due to non-optimal RMP status: {rmp_status}")
+            # Mark this node as pruned/unusable so parent won't take its lowest_value
+            branching.lowest_value = float('inf')
+            return True
 
         # # Check feasibility
         # if cg_obj > 2 * user_param.maxlength or cg_obj < -1e-6:
@@ -199,7 +306,7 @@ class BranchAndBound:
         best_val = 0
 
         # Convert path variables to edge variables
-        user_param.edges = np.zeros((user_param.nbclients + 2, user_param.nbclients + 2))
+        user_param.edges = np.zeros((user_param.nbclients + 1, user_param.nbclients + 1))
         for route in routes:
             if route.get_Q() > 1e-6:
                 path = route.get_path()
@@ -210,8 +317,8 @@ class BranchAndBound:
 
         # Find fractional edge
         fractional_edges_count = 0
-        for i in range(user_param.nbclients + 2):
-            for j in range(user_param.nbclients + 2):
+        for i in range(user_param.nbclients + 1):
+            for j in range(user_param.nbclients + 1):
                 coef = user_param.edges[i][j]
                 if coef > 1e-6 and (coef < 0.9999999999 or coef > 1.0000000001):
                     fractional_edges_count += 1

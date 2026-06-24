@@ -1,6 +1,9 @@
 import heapq
 from functools import cmp_to_key
 import numpy as np
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
 from route import Route
 from paramsVRP import ParamsVRP
 from sortedcontainers import SortedSet

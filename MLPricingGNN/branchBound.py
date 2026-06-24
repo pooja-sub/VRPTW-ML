@@ -5,16 +5,36 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import gurobipy as gp
 from gurobipy import GRB
 from Common.paramsVRP import ParamsVRP
+from Common.route import Route
 from columnGen import ColumnGeneration
 from expanded_pricing import ExpandedGraphPricing
 import numpy as np
 import copy
 
+try:
+    from pricing import build_reduced_graph
+except Exception:
+    try:
+        from MLPricing.pricing import build_reduced_graph
+    except Exception:
+        build_reduced_graph = None
+
+try:
+    from pricing import configure_guided_pruning
+except Exception:
+    try:
+        from MLPricing.pricing import configure_guided_pruning
+    except Exception:
+        configure_guided_pruning = None
+
 class BranchAndBound:
     def __init__(self, enable_column_deletion=True, deletion_threshold=30, enable_early_stop=False, gap_threshold=None,
                  enable_node_elimination=False, node_elimination_threshold=1.5, min_nonbasic_columns=100,
                  lambda_factor=2.0, time_limit=None,
-                 use_expanded_pricing=True, expanded_max_m=None, expanded_max_routes=20):
+                 use_expanded_pricing=True, expanded_max_m=None, expanded_max_routes=20,
+                 reduced_graph_min_columns=5,
+                 use_gnn_pruning=True, gnn_model_path=None, gnn_threshold=0.55,
+                 gnn_keep_ratio=0.35, gnn_top_k_per_node=6):
         self.lowerbound = -1e10
         self.upperbound = 1e10
         self.bb_node_count = 0  # Track number of BB nodes processed
@@ -31,8 +51,24 @@ class BranchAndBound:
         self.use_expanded_pricing = use_expanded_pricing
         self.expanded_max_m = expanded_max_m
         self.expanded_max_routes = expanded_max_routes
-        self.shared_expanded_pricing = None
+        self.reduced_graph_min_columns = max(0, int(reduced_graph_min_columns))
+        self.use_gnn_pruning = use_gnn_pruning
+        self.gnn_model_path = gnn_model_path
+        self.gnn_threshold = gnn_threshold
+        self.gnn_keep_ratio = gnn_keep_ratio
+        self.gnn_top_k_per_node = gnn_top_k_per_node
+        self.shared_expanded_pricing_full = None
+        self.shared_expanded_pricing_reduced = None
         self.shared_expanded_pricing_key = None
+
+        if configure_guided_pruning is not None:
+            configure_guided_pruning(
+                enabled=self.use_gnn_pruning,
+                model_path=self.gnn_model_path,
+                threshold=self.gnn_threshold,
+                keep_ratio=self.gnn_keep_ratio,
+                top_k_per_node=self.gnn_top_k_per_node,
+            )
         
         # Timing statistics and limit
         self.total_rmp_time = 0.0  # Cumulative RMP time across all nodes
@@ -40,38 +76,59 @@ class BranchAndBound:
         self.time_limit = time_limit  # Optional time limit in seconds
         self.start_time = None  # Initialized when bb_node is called
 
-    def _get_shared_expanded_pricing(self, user_param):
-        """
-        Build expanded graphs once and reuse across all BnP nodes.
-
-        Branching only forbids/enforces arcs via user_param.dist. Pricing already checks
-        current dist feasibility at extension time, so a shared expanded graph built from
-        the base preprocessed network can be reused safely across descendants.
-        """
+    def _get_shared_expanded_pricing_pair(self, user_param):
+        """Build full/reduced expanded-graph caches once and reuse across BnP nodes."""
         if not self.use_expanded_pricing:
-            return None
+            return None, None
 
         cache_key = (
             getattr(user_param, "instance_path", ""),
             int(self.expanded_max_m) if self.expanded_max_m is not None else None,
         )
+        if self.shared_expanded_pricing_key == cache_key and self.shared_expanded_pricing_full is not None:
+            return self.shared_expanded_pricing_reduced, self.shared_expanded_pricing_full
 
-        if self.shared_expanded_pricing is not None and self.shared_expanded_pricing_key == cache_key:
-            return self.shared_expanded_pricing
-
-        # Build from the base preprocessed arc set (without node-specific branching edits).
         base_param = copy.deepcopy(user_param)
         base_param.dist = copy.deepcopy(user_param.dist_base)
 
-        print("[ExpandedPricing] Building shared expanded-graph cache once at BnP level")
-        self.shared_expanded_pricing = ExpandedGraphPricing(
+        reduced_param = None
+        if build_reduced_graph is not None:
+            try:
+                allowed_arcs = build_reduced_graph(base_param)
+            except Exception as exc:
+                print(f"[MLPricing] Reduced expanded graph unavailable: {exc}")
+                allowed_arcs = set()
+
+            if allowed_arcs:
+                reduced_param = copy.deepcopy(base_param)
+                verybig = reduced_param.verybig
+                node_count = reduced_param.nbclients + 1
+                for i in range(node_count):
+                    for j in range(node_count):
+                        if (i, j) not in allowed_arcs:
+                            reduced_param.dist[i][j] = verybig
+                print(f"[MLPricing] Built reduced base graph for expanded pricing with {len(allowed_arcs)} allowed arcs")
+
+        print("[MLPricing] Building shared FULL expanded-graph cache")
+        self.shared_expanded_pricing_full = ExpandedGraphPricing(
             user_param=base_param,
             max_m=self.expanded_max_m,
             quiet_graph_logs=True,
             quiet_spprc_logs=True,
         )
+
+        self.shared_expanded_pricing_reduced = None
+        if reduced_param is not None:
+            print("[MLPricing] Building shared REDUCED expanded-graph cache")
+            self.shared_expanded_pricing_reduced = ExpandedGraphPricing(
+                user_param=reduced_param,
+                max_m=self.expanded_max_m,
+                quiet_graph_logs=True,
+                quiet_spprc_logs=True,
+            )
+
         self.shared_expanded_pricing_key = cache_key
-        return self.shared_expanded_pricing
+        return self.shared_expanded_pricing_reduced, self.shared_expanded_pricing_full
 
     class TreeBB:
         def __init__(self, father=None, branch_from=-1, branch_to=-1, branch_value=-1,
@@ -85,6 +142,20 @@ class BranchAndBound:
             self.toplevel = False
             self.vehicle_lower_bound = vehicle_lower_bound
             self.vehicle_upper_bound = vehicle_upper_bound
+
+    # def _deduplicate_routes_by_path(self, routes):
+    #     """
+    #     Keep only one copy of each route path.
+    #     """
+    #     unique_routes = []
+    #     seen_paths = set()
+    #     for route in routes:
+    #         route_key = route.path_key()
+    #         if route_key in seen_paths:
+    #             continue
+    #         seen_paths.add(route_key)
+    #         unique_routes.append(route)
+    #     return unique_routes
 
     def edges_based_on_branching(self, user_param, branching, recur):
         if branching.father is not None:  # Stop before root node
@@ -106,6 +177,23 @@ class BranchAndBound:
 
             if recur:
                 self.edges_based_on_branching(user_param, branching.father, recur)
+
+    # def vehicle_count_branch(self, routes):
+    #     """
+    #     Branching rule on total number of vehicles (Desrochers, Desrosiers, Solomon 1992).
+    #
+    #     Returns bounds (floor, ceil) of the fractional vehicle count if non-integer.
+    #     Caller can pass these as vehicle_lower_bound / vehicle_upper_bound to compute_col_gen.
+    #     """
+    #     total = sum(route.get_Q() for route in routes)
+    #     if total < 0:
+    #         return None
+    #     frac = abs(total - round(total))
+    #     if frac < 1e-6:
+    #         return None
+    #     lower = int(np.floor(total))
+    #     upper = int(np.ceil(total))
+    #     return lower, upper
 
     def bb_node(self, user_param, routes, branching, best_routes, depth):
         import time
@@ -141,31 +229,29 @@ class BranchAndBound:
         # Display local info
         print(f"\nEdge from {branching.branch_from} to {branching.branch_to}: {'forbid' if branching.branch_value == 0 else 'set'}")
 
-        # Compute solution using Column Generation (pass bounds for variable fixing)
-        column_gen = ColumnGeneration(user_param, 
-                         enable_column_deletion=self.enable_column_deletion,
-                         deletion_threshold=self.deletion_threshold,
-                         min_nonbasic_columns=self.min_nonbasic_columns,
-                         lambda_pricing=False,
-                         lambda_factor=self.lambda_factor,
-                         num_columns_to_keep=10000,
-                         enable_node_elimination=self.enable_node_elimination,
-                         node_elimination_threshold=self.node_elimination_threshold,
-                         use_expanded_pricing=self.use_expanded_pricing,
-                         expanded_max_m=self.expanded_max_m,
-                         expanded_max_routes=self.expanded_max_routes,
-                         shared_expanded_pricing=self._get_shared_expanded_pricing(user_param))
-        cg_obj, routes = column_gen.compute_col_gen(routes, self.lowerbound, self.upperbound, 
-                                fix_interval=10, bb_node_count=self.bb_node_count,
-                                early_stop_pricing=self.enable_early_stop,
-                                # vehicle_lower_bound=branching.vehicle_lower_bound,
-                                # vehicle_upper_bound=branching.vehicle_upper_bound
-                                )
+        # Compute solution using the local ColumnGeneration implementation.
+        # ML pruning (RF + expanded + GNN) is ONLY applied at root node (depth 0)
+        is_root_node = (branching.father is None)
         
-        # Accumulate timing statistics
-        timing_stats = column_gen.get_timing_stats()
-        self.total_rmp_time += timing_stats['rmp_time']
-        self.total_pp_time += timing_stats['pp_time']
+        if is_root_node:
+            # ROOT NODE: Apply RF pruning + expanded graphs + GNN per-iteration pruning
+            print(f"[ML PRUNING ACTIVE] ROOT node with RF + Expanded graphs + GNN guidance")
+            reduced_backend, full_backend = self._get_shared_expanded_pricing_pair(user_param)
+        else:
+            # NON-ROOT NODES: Standard exact pricing without ML pruning
+            print(f"[ML PRUNING INACTIVE] Non-root node at depth {depth}, using standard SPPRC pricing")
+            reduced_backend, full_backend = None, None
+        
+        column_gen = ColumnGeneration(
+            user_param,
+            use_expanded_pricing=self.use_expanded_pricing if is_root_node else False,
+            expanded_max_m=self.expanded_max_m,
+            expanded_max_routes=self.expanded_max_routes,
+            shared_expanded_pricing_reduced=reduced_backend,
+            shared_expanded_pricing_full=full_backend,
+            reduced_graph_min_columns=self.reduced_graph_min_columns,
+        )
+        cg_obj, routes = column_gen.compute_col_gen(routes)
 
         # # Check feasibility
         # if cg_obj > 2 * user_param.maxlength or cg_obj < -1e-6:
@@ -184,6 +270,47 @@ class BranchAndBound:
         if branching.lowest_value > self.upperbound:
             print(f"CUT | Lower bound: {self.lowerbound} | Upper bound: {self.upperbound} | Gap: {(self.upperbound - self.lowerbound) / self.upperbound} | Depth: {depth} | Local CG cost: {cg_obj} | Routes: {len(routes)}")
             return True
+
+        # Hierarchical branching: vehicles first, then edges (DISABLED FOR NOW)
+        # vehicle_bounds = self.vehicle_count_branch(routes)
+        # if vehicle_bounds:
+        #     floor_v, ceil_v = vehicle_bounds
+        #     parent_lower = branching.vehicle_lower_bound
+        #     parent_upper = branching.vehicle_upper_bound
+        #
+        #     # Branch 1: total vehicles <= floor_v
+        #     child1_lower = parent_lower
+        #     child1_upper = floor_v if parent_upper is None else min(parent_upper, floor_v)
+        #
+        #     # Branch 2: total vehicles >= ceil_v
+        #     child2_lower = ceil_v if parent_lower is None else max(parent_lower, ceil_v)
+        #     child2_upper = parent_upper
+        #
+        #     print(f"VEHICLE BRANCH | total={sum(r.get_Q() for r in routes):.4f} | floor={floor_v} | ceil={ceil_v} | Depth: {depth}")
+        #
+        #     # Explore child with upper bound (<= floor)
+        #     if child1_lower is None or child1_upper is None or child1_lower <= child1_upper:
+        #         newnode1 = self.TreeBB(branching, -1, -1, -1, child1_lower, child1_upper)
+        #         if not self.bb_node(user_param, routes, newnode1, best_routes, depth + 1):
+        #             return False
+        #         branching.son0 = newnode1
+        #     else:
+        #         print(f"  [Pruned] Infeasible vehicle upper bound: {child1_lower}>{child1_upper}")
+        #
+        #     # Explore child with lower bound (>= ceil)
+        #     if child2_lower is None or child2_upper is None or child2_lower <= child2_upper:
+        #         newnode2 = self.TreeBB(branching, -1, -1, -1, child2_lower, child2_upper)
+        #         if not self.bb_node(user_param, routes, newnode2, best_routes, depth + 1):
+        #             return False
+        #         if branching.son0 is None:
+        #             branching.son0 = newnode2
+        #         branching.lowest_value = min(branching.lowest_value, newnode2.lowest_value)
+        #     else:
+        #         print(f"  [Pruned] Infeasible vehicle lower bound: {child2_lower}>{child2_upper}")
+        #
+        #     if branching.son0 is not None and branching.lowest_value > branching.son0.lowest_value:
+        #         branching.lowest_value = branching.son0.lowest_value
+        #     return True
 
         # Check integer feasibility and find branching variable on edges
         feasible = True

@@ -8,7 +8,7 @@ class ParamsVRP:
         """
         Initialize parameter class for storing and processing Vehicle Routing Problem (VRP) parameters.
 
-        :param nbclients: Number of customers (excluding start and end depot)
+        :param nbclients: Number of customers (including start depot) - default 100 for initialization only
         :param capacity: Vehicle capacity
         :param mvehic: Number of vehicles
         :param speed: Vehicle speed
@@ -61,19 +61,19 @@ class ParamsVRP:
             print(f'Capacity: {self.capacity}')
             print(f'Number of customers: {self.nbclients}')
 
-            # Initialize other data structures (nbclients+2 to accommodate start depot at 0, customers at 1 to nbclients, end depot at nbclients+1)
-            self.citieslab = [None] * (self.nbclients + 2)
-            self.posx = np.zeros(self.nbclients + 2)
-            self.posy = np.zeros(self.nbclients + 2)
-            self.d = np.zeros(self.nbclients + 2)
-            self.a = np.zeros(self.nbclients + 2, dtype=int)
-            self.b = np.zeros(self.nbclients + 2, dtype=int)
-            self.s = np.zeros(self.nbclients + 2, dtype=int)
-            self.dist_base = np.zeros((self.nbclients + 2, self.nbclients + 2))
-            self.dist = np.zeros((self.nbclients + 2, self.nbclients + 2))
-            self.ttime = np.zeros((self.nbclients + 2, self.nbclients + 2))
-            self.cost = np.zeros((self.nbclients + 2, self.nbclients + 2))
-            self.edges = np.zeros((self.nbclients + 2, self.nbclients + 2))
+            # Initialize other data structures (nbclients+1 to accommodate start depot at 0, customers at 1 to nbclients-1, end depot at nbclients)
+            self.citieslab = [None] * (self.nbclients + 1)
+            self.posx = np.zeros(self.nbclients + 1)
+            self.posy = np.zeros(self.nbclients + 1)
+            self.d = np.zeros(self.nbclients + 1)
+            self.a = np.zeros(self.nbclients + 1, dtype=int)
+            self.b = np.zeros(self.nbclients + 1, dtype=int)
+            self.s = np.zeros(self.nbclients + 1, dtype=int)
+            self.dist_base = np.zeros((self.nbclients + 1, self.nbclients + 1))
+            self.dist = np.zeros((self.nbclients + 1, self.nbclients + 1))
+            self.ttime = np.zeros((self.nbclients + 1, self.nbclients + 1))
+            self.cost = np.zeros((self.nbclients + 1, self.nbclients + 1))
+            self.edges = np.zeros((self.nbclients + 1, self.nbclients + 1))
 
             # Read depot and customer data (depot at index 0, customers at indices 1 to nbclients)
             for i in range(0, self.nbclients):
@@ -106,29 +106,29 @@ class ParamsVRP:
                         f'{self.a[self.nbclients]} {self.b[self.nbclients]} {self.s[self.nbclients]}')
 
             # Calculate distance matrix
-            for i in range(self.nbclients + 2):
-                for j in range(self.nbclients + 2):
+            for i in range(self.nbclients + 1):
+                for j in range(self.nbclients + 1):
                     # truncate to get the same results as in Solomon
                     self.dist_base[i, j] = np.round(
                         10 * np.sqrt((self.posx[i] - self.posx[j]) ** 2 + (self.posy[i] - self.posy[j]) ** 2)) / 10.0
 
             # Set depot to customer and vice versa distance as infinity and diagonal to infinity
-            for i in range(self.nbclients + 2):
+            for i in range(self.nbclients + 1):
                 self.dist_base[i, 0] = self.verybig  # Can't return to start depot
                 self.dist_base[self.nbclients, i] = self.verybig  # Can't leave end depot
                 self.dist_base[i, i] = self.verybig  # No self-loops
 
-            for i in range(self.nbclients + 2):
-                for j in range(self.nbclients + 2):
+            for i in range(self.nbclients + 1):
+                for j in range(self.nbclients + 1):
                     self.dist[i, j] = self.dist_base[i, j]
 
             # Calculate travel time matrix (including service time at origin)
-            for i in range(self.nbclients + 2):
-                for j in range(self.nbclients + 2):
+            for i in range(self.nbclients + 1):
+                for j in range(self.nbclients + 1):
                     self.ttime[i, j] = self.dist_base[i, j] / self.speed # + self.s[i]
 
             # Other edge costs are given in column generation
-            for j in range(self.nbclients + 2):
+            for j in range(self.nbclients + 1):
                 self.cost[0][j] = self.dist[0][j]
                 self.cost[j][self.nbclients] = self.dist[j][self.nbclients]
 
@@ -189,8 +189,8 @@ class ParamsVRP:
         total_arcs = 0
         
         # Check all arcs between customers (not including depots in the checks)
-        for i in range(self.nbclients + 2):
-            for j in range(self.nbclients + 2):
+        for i in range(self.nbclients + 1):
+            for j in range(self.nbclients + 1):
                 # Skip if already eliminated or is a depot self-loop
                 if self.dist_base[i][j] >= self.verybig - 1e-6:
                     continue
@@ -237,8 +237,6 @@ class ParamsVRP:
         - Maximum degree among all nodes
         """
         # Use only the actual nodes (start depot + customers + end depot)
-        # There is one extra padded row/column in the matrices because of historical +2 sizing;
-        # we ignore that dummy node here to avoid inflating degrees.
         node_count = self.nbclients + 1  # indices 0..self.nbclients
 
         # Count incoming and outgoing arcs for each real node
@@ -291,7 +289,7 @@ class ParamsVRP:
             a1 = a_old.copy()
             for l in range(1, self.nbclients):
                 min_arrival = self.verybig
-                for i in range(self.nbclients + 2):
+                for i in range(self.nbclients + 1):
                     if i != l and self.dist[i][l] < self.verybig - 1e-6:
                         min_arrival = min(min_arrival, a_old[i] + self.ttime[i][l])
 
@@ -304,7 +302,7 @@ class ParamsVRP:
             a2 = a1.copy()
             for l in range(1, self.nbclients):
                 min_arrival = self.verybig
-                for j in range(self.nbclients + 2):
+                for j in range(self.nbclients + 1):
                     if j != l and self.dist[l][j] < self.verybig - 1e-6:
                         min_arrival = min(min_arrival, a1[j] - self.ttime[l][j])
 
@@ -317,7 +315,7 @@ class ParamsVRP:
             b3 = b_old.copy()
             for l in range(1, self.nbclients):
                 max_departure = a2[l]
-                for i in range(self.nbclients + 2):
+                for i in range(self.nbclients + 1):
                     if i != l and self.dist[i][l] < self.verybig - 1e-6:
                         max_departure = max(max_departure, b_old[i] + self.ttime[i][l])
 
@@ -329,7 +327,7 @@ class ParamsVRP:
             b4 = b3.copy()
             for l in range(1, self.nbclients):
                 max_departure = a2[l]
-                for j in range(self.nbclients + 2):
+                for j in range(self.nbclients + 1):
                     if j != l and self.dist[l][j] < self.verybig - 1e-6:
                         max_departure = max(max_departure, b3[j] - self.ttime[l][j])
 

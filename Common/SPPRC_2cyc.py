@@ -130,8 +130,8 @@ class SPPRC_2Cyc:
         U.add(0)
 
         # For each city, track indices of labels at that city (for dominance)
-        checkDom = [0] * (self.paramsVRP.nbclients + 2)
-        city2labels = [[] for _ in range(self.paramsVRP.nbclients + 2)]
+        checkDom = [0] * (self.paramsVRP.nbclients + 1)
+        city2labels = [[] for _ in range(self.paramsVRP.nbclients + 1)]
         city2labels[0].append(0)
 
         nbsol = 0
@@ -245,7 +245,7 @@ class SPPRC_2Cyc:
                             print(f"  [Early Stop] Found {nbsol} negative cost routes (>= {min_columns_early_stop})")
                             break
                 else:  # Extend to other cities
-                    for i in range(self.paramsVRP.nbclients + 2):
+                    for i in range(self.paramsVRP.nbclients + 1):
                         if i in eliminated_customers:
                             continue
                         

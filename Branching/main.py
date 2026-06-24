@@ -1,9 +1,14 @@
+import sys
+import os
+
+# Add parent directory to path to import Common modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from branchBound import BranchAndBound
-from paramsVRP import ParamsVRP
-from route import Route
+from Common.paramsVRP import ParamsVRP
+from Common.route import Route
 import time
-from solVisualization import solVis
-from logcapture import start_logging
+from Common.logcapture import start_logging
 import heapq
 
 
@@ -480,36 +485,20 @@ def main(datasetPath,
     
     print("="*70)
 
-    # Visualize solution
-    # solVis(user_param, best_routes, sol_time, opt_cost, dataset_name, SHOWFIG)
-
-
-# def BatchMain(folder_path="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_50_customer_instances", banned_datasets=()):
-
-#     datasetBatch = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.txt')]
-
-#     # Remove unwanted datasets
-#     datasetBan = [os.path.join(folder_path, f"{ds}.txt") for ds in banned_datasets]
-#     datasetBatch = [ds for ds in datasetBatch if ds not in datasetBan]
-
-#     # Call main function for each dataset
-#     for dataset in datasetBatch:
-#         print(f"Processing dataset: {dataset}")
-#         main(dataset)
 
 if __name__ == "__main__":
 
     # Start logging to a timestamped file (also tee to console)
     start_logging()
 
+    # Allow overriding dataset path from environment for batch runs
+    dataset_env = os.environ.get('BNP_DATASET_PATH')
+    default_dataset = r"C:\Users\CiSTUP\Downloads\CVRTPW_Dataset\solomon_50_customer_instances\c104.txt"
+    datasetPath = dataset_env if dataset_env else default_dataset
+
     # Single dataset processing
     # Choose heuristic: 'savings' (Clarke-Wright) or 'solomon' (Solomon's I1 insertion)
-    main(datasetPath="C:\\Users\\CiSTUP\\Downloads\\VRTPW_Dataset\\solomon_50_customer_instances\\r201.txt", 
-         SHOWFIG=True,
+    main(datasetPath=datasetPath, 
+         SHOWFIG=False,
          heuristic='savings',
-         time_limit=1000)  # Set to 300 seconds (5 minutes). Change to 'solomon' to test Solomon's insertion heuristic. Set time_limit=None for no limit.
-
-    # Batch processing datasets
-    #BatchMain(folder_path="F:/absolutePythonProject/universalPythonProject/BP-VRPTW/dataset", banned_datasets=["c110_1", "c101"])
-
-
+         time_limit=1000) 

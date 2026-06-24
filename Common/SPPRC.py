@@ -1,6 +1,9 @@
 import heapq
 from functools import total_ordering
 from sortedcontainers import SortedSet
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
 from route import Route
 from paramsVRP import ParamsVRP
 

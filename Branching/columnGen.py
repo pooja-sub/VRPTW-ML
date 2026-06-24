@@ -1,9 +1,12 @@
+import sys
+import os
+
+# Add parent directory to path to import Common modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import gurobipy as gp
 from gurobipy import GRB
-from paramsVRP import ParamsVRP
-from route import Route
-from ESPPRC import ESPPRC
-import numpy as np
+from Common.ESPPRC import ESPPRC
 import time
 
 class ColumnGeneration:
@@ -299,18 +302,7 @@ class ColumnGeneration:
             "ClientService"
         )
 
-        # Optional vehicle count bounds (for vehicle-count branching)
-        # vehicle_constr_lower = None
-        # vehicle_constr_upper = None
-        # if vehicle_lower_bound is not None:
-        #     vehicle_constr_lower = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) >= vehicle_lower_bound,
-        #                                            name="VehicleCountLower")
-        # if vehicle_upper_bound is not None:
-        #     vehicle_constr_upper = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) <= vehicle_upper_bound,
-        #                                            name="VehicleCountUpper")
-
         model.update()
-        #print(constraints)
 
         # Set objective function
         model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
@@ -351,7 +343,6 @@ class ColumnGeneration:
                 print(
                     f"[-----ColumnGeneration-----]Iteration {iteration}: Model not solved. Status = {model.status} | Elapsed: {elapsed_total:.2f}s")
                 return float('inf'), []
-            #print(f"Iteration {iteration}: Objective = {model.objVal}, Pi = {pi}")
             
             # Apply column deletion if enabled
             if self.enable_column_deletion and iteration > 0 and iteration % fix_interval == 0:
@@ -398,77 +389,22 @@ class ColumnGeneration:
                          for client in range(1, self.paramsVRP.nbclients)),
                         "ClientService"
                     )
-                    # if vehicle_lower_bound is not None:
-                    #     vehicle_constr_lower = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) >= vehicle_lower_bound,
-                    #                                            name="VehicleCountLower")
-                    # if vehicle_upper_bound is not None:
-                    #     vehicle_constr_upper = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) <= vehicle_upper_bound,
-                    #                                            name="VehicleCountUpper")
                     model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
                     model.update()
                     continue
-            
-            # DISABLED: Apply variable fixing at regular intervals
-            # if iteration > 0 and iteration % fix_interval == 0:
-            #     print(f"[Iteration {iteration}] Applying variable fixing by reduced cost...")
-            #     fixed_count = self.fix_variables_by_reduced_cost(model, y, lower_bound, upper_bound, constraints)
-            #     
-            #     # If routes were fixed, rebuild the model
-            #     if fixed_count > 0:
-            #         # Get active routes (not fixed)
-            #         active_routes = [route for i, route in enumerate(self.routes) if i not in self.fixed_routes]
-            #         
-            #         if len(active_routes) == 0:
-            #             print("[ERROR] All routes have been fixed. Cannot continue.")
-            #             break
-            #         
-            #         # Rebuild model with only active routes
-            #         self.routes = active_routes
-            #         self.fixed_routes.clear()  # Reset indices after rebuilding
-            #         
-            #         # Remove all variables and constraints
-            #         vars_to_remove = model.getVars()
-            #         for var in vars_to_remove:
-            #             model.remove(var)
-            #         constrs_to_remove = model.getConstrs()
-            #         for constr in constrs_to_remove:
-            #             model.remove(constr)
-            #         
-            #         # Recreate with active routes only
-            #         y = model.addVars(len(self.routes), vtype=GRB.CONTINUOUS, name="y", lb=0.0)
-            #         constraints = model.addConstrs(
-            #             (gp.quicksum(y[i] for i, route in enumerate(self.routes) if client in route.path[1:-1]) >= 1
-            #              for client in range(1, self.paramsVRP.nbclients)),
-            #             "ClientService"
-            #         )
-            #         # if vehicle_lower_bound is not None:
-            #         #     vehicle_constr_lower = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) >= vehicle_lower_bound,
-            #         #                                            name="VehicleCountLower")
-            #         # if vehicle_upper_bound is not None:
-            #         #     vehicle_constr_upper = model.addConstr(gp.quicksum(y[i] for i in range(len(self.routes))) <= vehicle_upper_bound,
-            #         #                                            name="VehicleCountUpper")
-            #     model.setObjective(gp.quicksum(y[i] * self.routes[i].cost for i in range(len(self.routes))), GRB.MINIMIZE)
-            #     model.update()
-                    
-                    # Re-optimize after fixing
-                    continue
+        
 
             # Update SPPRC cost matrix
             for i in range(1, self.paramsVRP.nbclients):
-                for j in range(self.paramsVRP.nbclients + 2):
+                for j in range(self.paramsVRP.nbclients + 1):
                     self.paramsVRP.cost[i][j] = self.paramsVRP.dist[i][j] - pi[i - 1]
-                    # if self.paramsVRP.cost[i][j] < 0:
-                    #     #print(f"Negative cost found: {self.paramsVRP.cost[i][j]} at {i}, {j}")
-                    #     pass
+                    
 
             # Apply node elimination strategy if enabled
             eliminated_nodes = set()
             if self.enable_node_elimination:
                 eliminated_nodes = self.eliminate_nodes_by_dual_values(pi)
 
-            # Solve SPPRC to get new columns
-            # Determine if this is the final pricing (proving optimality)
-            # is_final_pricing = (iteration > 0)  # After first iteration, we're refining
             
             sp = ESPPRC(self.paramsVRP)
             new_routes = []
@@ -547,9 +483,3 @@ class ColumnGeneration:
 
         return model.objVal, self.routes
 
-        '''
-        except gp.GurobiError as e:
-            print(f"Gurobi Error: {e}")
-        except Exception as e:
-            print(f"Error in compute_col_gen: {e}")
-        '''
